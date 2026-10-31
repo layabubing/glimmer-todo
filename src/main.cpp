@@ -1,4 +1,5 @@
 #include "model.hpp"
+#include "virtual_desktop.hpp"
 #include <windowsx.h>
 #include <commctrl.h>
 #include <commdlg.h>
@@ -22,6 +23,7 @@ HFONT bodyFont, smallFont, rowFont, doneFont;
 HBRUSH paperBrush, whiteBrush;
 HICON appIcon;
 HWINEVENTHOOK foregroundHook;
+HWINEVENTHOOK desktopHook;
 UINT taskbarCreated;
 NOTIFYICONDATAW tray{};
 State state;
@@ -231,8 +233,7 @@ void drawItem(const DRAWITEMSTRUCT* item) {
     }
 }
 
-std::wstring foregroundExe() {
-    HWND window = GetForegroundWindow();
+std::wstring foregroundExe(HWND window) {
     if (!window) return {};
     DWORD pid = 0; GetWindowThreadProcessId(window, &pid);
     if (!pid || pid == GetCurrentProcessId()) return {};
@@ -250,7 +251,10 @@ void evaluateForeground() {
     HWND foreground = GetForegroundWindow();
     // 焦点切换期间的空句柄维持已有显示状态。
     if (!foreground) return;
-    bool hidden = state.matches(foregroundExe());
+    if (!isOnCurrentDesktop(foreground)) return;
+    DWORD cloaked = 0;
+    if (SUCCEEDED(DwmGetWindowAttribute(foreground, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) && cloaked) return;
+    bool hidden = state.matches(foregroundExe(foreground));
     bool changed = automaticallyHidden != hidden;
     automaticallyHidden = hidden;
     bool shouldShow = !manuallyHidden && !automaticallyHidden;
@@ -258,7 +262,7 @@ void evaluateForeground() {
         if (fileDialog && IsWindowVisible(fileDialog)) ShowWindow(fileDialog, SW_HIDE);
         if (settingsWindow && IsWindowVisible(settingsWindow)) ShowWindow(settingsWindow, SW_HIDE);
         if (IsWindowVisible(mainWindow)) ShowWindow(mainWindow, SW_HIDE);
-    } else {
+    } else if (followCurrentDesktop({mainWindow, settingsWindow, fileDialog})) {
         if (!IsWindowVisible(mainWindow)) ShowWindow(mainWindow, SW_SHOWNOACTIVATE);
         if (settingsWindow && !IsWindowVisible(settingsWindow)) ShowWindow(settingsWindow, SW_SHOWNOACTIVATE);
         if (fileDialog && !IsWindowVisible(fileDialog)) ShowWindow(fileDialog, SW_SHOWNOACTIVATE);
@@ -268,6 +272,10 @@ void evaluateForeground() {
 
 void CALLBACK foregroundEvent(HWINEVENTHOOK, DWORD, HWND, LONG, LONG, DWORD, DWORD) {
     PostMessageW(mainWindow, ForegroundMessage, 0, 0);
+}
+
+void CALLBACK desktopEvent(HWINEVENTHOOK, DWORD, HWND window, LONG, LONG, DWORD, DWORD) {
+    if (window == mainWindow) PostMessageW(mainWindow, ForegroundMessage, 0, 0);
 }
 
 void updateTray() {
@@ -432,7 +440,7 @@ void command(int id) {
 }
 
 LRESULT CALLBACK mainProc(HWND window,UINT message,WPARAM wParam,LPARAM lParam) {
-    if(message==taskbarCreated && taskbarCreated) { addTray(); return 0; }
+    if(message==taskbarCreated && taskbarCreated) { reconnectVirtualDesktops(); addTray(); evaluateForeground(); return 0; }
     switch(message) {
     case WM_CREATE:
         mainWindow=window;
@@ -486,7 +494,7 @@ LRESULT CALLBACK mainProc(HWND window,UINT message,WPARAM wParam,LPARAM lParam) 
     case WM_QUERYENDSESSION:save();return TRUE;
     case WM_CLOSE:manuallyHidden=true;evaluateForeground();updateTray();return 0;
     case WM_DESTROY:
-        ready=false;KillTimer(window,1);if(foregroundHook)UnhookWinEvent(foregroundHook);Shell_NotifyIconW(NIM_DELETE,&tray);PostQuitMessage(0);return 0;
+        ready=false;KillTimer(window,1);if(foregroundHook)UnhookWinEvent(foregroundHook);if(desktopHook)UnhookWinEvent(desktopHook);Shell_NotifyIconW(NIM_DELETE,&tray);PostQuitMessage(0);return 0;
     }
     return DefWindowProcW(window,message,wParam,lParam);
 }
@@ -515,6 +523,7 @@ int WINAPI wWinMain(HINSTANCE app,HINSTANCE,LPWSTR,int) {
         require(PostMessageW(existing,ShowRequest,0,0)!=FALSE,L"无法打开已有实例。");
         CloseHandle(mutex);return 0;
     }
+    initializeVirtualDesktops();
     PWSTR local=nullptr;require(SHGetKnownFolderPath(FOLDERID_LocalAppData,0,nullptr,&local)==S_OK,L"无法获取本地数据目录。");
     dataFile=std::filesystem::path(local)/L"DesktopList"/L"state.json";CoTaskMemFree(local);
     state.load(dataFile);
@@ -539,7 +548,9 @@ int WINAPI wWinMain(HINSTANCE app,HINSTANCE,LPWSTR,int) {
     taskbarCreated=RegisterWindowMessageW(L"TaskbarCreated");addTray();
     foregroundHook=SetWinEventHook(EVENT_SYSTEM_FOREGROUND,EVENT_SYSTEM_FOREGROUND,nullptr,foregroundEvent,0,0,WINEVENT_OUTOFCONTEXT);
     require(foregroundHook!=nullptr,L"无法启用前台软件检测。");
-    require(SetTimer(mainWindow,1,1000,nullptr)!=0,L"无法启动前台状态检查。");
+    desktopHook=SetWinEventHook(EVENT_OBJECT_CLOAKED,EVENT_OBJECT_UNCLOAKED,nullptr,desktopEvent,GetCurrentProcessId(),0,WINEVENT_OUTOFCONTEXT);
+    require(desktopHook!=nullptr,L"无法启用虚拟桌面切换检测。");
+    require(SetTimer(mainWindow,1,250,nullptr)!=0,L"无法启动前台状态检查。");
     ready=true;evaluateForeground();
     MSG message{};BOOL result;
     while((result=GetMessageW(&message,nullptr,0,0))>0) {
@@ -550,5 +561,5 @@ int WINAPI wWinMain(HINSTANCE app,HINSTANCE,LPWSTR,int) {
     }
     require(result!=-1,L"窗口消息处理失败。");
     for(auto font:{bodyFont,smallFont,rowFont,doneFont})DeleteObject(font);
-    DeleteObject(paperBrush);DeleteObject(whiteBrush);DestroyIcon(appIcon);CloseHandle(mutex);return 0;
+    DeleteObject(paperBrush);DeleteObject(whiteBrush);DestroyIcon(appIcon);shutdownVirtualDesktops();CloseHandle(mutex);return 0;
 }
