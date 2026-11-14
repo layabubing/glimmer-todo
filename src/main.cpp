@@ -803,7 +803,7 @@ int WINAPI wWinMain(HINSTANCE app,HINSTANCE,LPWSTR,int) {
     ready=true;evaluateForeground();
     MSG message{};BOOL result;
     while((result=GetMessageW(&message,nullptr,0,0))>0) {
-        if(message.message==WM_KEYDOWN && message.wParam=='N' && (GetKeyState(VK_CONTROL)&0x8000) && (message.hwnd==mainWindow || IsChild(mainWindow,message.hwnd)) && (!settingsWindow || !IsChild(settingsWindow,message.hwnd))) {SetFocus(input);continue;}
+        if(message.message==WM_KEYDOWN && message.wParam=='N' && (GetKeyState(VK_CONTROL)&0x8000) && (message.hwnd==mainWindow || IsChild(mainWindow,message.hwnd)) && (!settingsWindow || !IsChild(settingsWindow,message.hwnd))) {TabCtrl_SetCurSel(tabs,0);selectView(0);SetFocus(input);continue;}
         if(scheduleWindow && IsDialogMessageW(scheduleWindow,&message))continue;
         if(settingsWindow && IsDialogMessageW(settingsWindow,&message))continue;
         if(IsDialogMessageW(mainWindow,&message))continue;
