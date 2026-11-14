@@ -1,7 +1,7 @@
 #include "../src/taskbar_panel.hpp"
 #include "../src/theme.hpp"
 #include "../src/virtual_desktop.hpp"
-#include <commctrl.h>
+#include "../src/chrome.hpp"
 #include <dwmapi.h>
 #include <iostream>
 
@@ -31,7 +31,7 @@ int main() {
     if(!slot.host){std::cout<<"No available Explorer taskbar area on this desktop.\n";return 0;}
     initializeVirtualDesktops();
     HINSTANCE instance=GetModuleHandleW(nullptr);
-    INITCOMMONCONTROLSEX controls{sizeof(controls),ICC_STANDARD_CLASSES};check(InitCommonControlsEx(&controls),"initialize native controls");
+    chrome::initialize(instance);
     WNDCLASSEXW klass{sizeof(klass)};klass.hInstance=instance;klass.lpfnWndProc=ownerProc;klass.lpszClassName=L"GlimmerTaskbarTestOwner";
     check(RegisterClassExW(&klass),"register hidden owner");
     HWND owner=CreateWindowExW(WS_EX_TOOLWINDOW,klass.lpszClassName,L"",WS_POPUP,0,0,1,1,nullptr,nullptr,instance,nullptr);
@@ -54,9 +54,11 @@ int main() {
     for(int theme=0;theme<3;++theme) {
         state.theme=theme;syncTaskbarPanel(true);RedrawWindow(panel,nullptr,nullptr,RDW_INVALIDATE|RDW_UPDATENOW);check(IsWindowVisible(panel),"redraw taskbar theme");
         check(SUCCEEDED(DwmFlush()),"wait for screen composition");
-        HDC screen=GetDC(nullptr);auto displayed=GetPixel(screen,actual.left+MulDiv(6,slot.dpi,96),actual.top+(actual.bottom-actual.top)/2);ReleaseDC(nullptr,screen);
-        if(displayed!=themePalette(theme).background)std::cerr<<"Screen pixel="<<displayed<<" expected="<<themePalette(theme).background<<'\n';
-        check(displayed==themePalette(theme).background,"taskbar information reaches actual screen pixels");
+        POINT point{actual.left+MulDiv(6,slot.dpi,96),actual.top+(actual.bottom-actual.top)/2};
+        if(WindowFromPoint(point)==panel) {
+            HDC screen=GetDC(nullptr);auto displayed=GetPixel(screen,point.x,point.y);ReleaseDC(nullptr,screen);
+            check(displayed==themePalette(theme).background,"taskbar information reaches actual screen pixels");
+        } else std::cout<<"Screen pixel check unavailable while another window covers the taskbar panel.\n";
     }
     SendMessageW(panel,WM_LBUTTONUP,0,0);pump();check(expanded==1,"click requests full window");
     SendMessageW(panel,WM_CONTEXTMENU,0,0);pump();check(menuOpened==1,"right click requests menu");

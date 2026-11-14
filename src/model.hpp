@@ -65,7 +65,7 @@ struct State {
     int theme = 0;
     CollapseMode collapseMode = CollapseMode::Capsule;
     int capsuleX = -1, capsuleY = -1;
-    int x = -1, y = -1, width = 260, height = 300;
+    int x = -1, y = -1, width = 300, height = 380;
     uint64_t nextId = 1;
 
     State();

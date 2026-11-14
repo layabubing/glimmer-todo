@@ -1,11 +1,12 @@
 #include "taskbar_panel.hpp"
 #include "theme.hpp"
-#include <commctrl.h>
+#include "chrome.hpp"
 #include <windowsx.h>
 
 namespace {
 HINSTANCE appInstance;
-HWND ownerWindow, panelWindow, tooltipWindow;
+HWND ownerWindow, panelWindow;
+chrome::Tooltip tooltip;
 State* model;
 UINT expandRequest, menuRequest, panelDpi = 96;
 HFONT textFont;
@@ -38,14 +39,7 @@ void draw(HWND window,HDC target) {
 
 LRESULT CALLBACK panelProc(HWND window,UINT message,WPARAM wParam,LPARAM lParam) {
     switch(message) {
-    case WM_CREATE: {
-        panelWindow=window;
-        tooltipWindow=CreateWindowExW(WS_EX_TOPMOST,TOOLTIPS_CLASSW,nullptr,WS_POPUP|TTS_ALWAYSTIP|TTS_NOPREFIX,0,0,0,0,window,nullptr,appInstance,nullptr);
-        require(tooltipWindow!=nullptr,L"无法创建任务栏信息提示。");
-        TOOLINFOW tool{sizeof(tool)};tool.uFlags=TTF_IDISHWND|TTF_SUBCLASS;tool.hwnd=window;tool.uId=reinterpret_cast<UINT_PTR>(window);tool.lpszText=const_cast<wchar_t*>(L"浮光待办");
-        require(SendMessageW(tooltipWindow,TTM_ADDTOOLW,0,reinterpret_cast<LPARAM>(&tool))!=FALSE,L"无法设置任务栏信息提示。");
-        SendMessageW(tooltipWindow,TTM_SETMAXTIPWIDTH,0,scale(420));return 0;
-    }
+    case WM_CREATE:panelWindow=window;return 0;
     case WM_MOUSEACTIVATE:return MA_NOACTIVATE;
     case WM_LBUTTONUP:PostMessageW(ownerWindow,expandRequest,0,0);return 0;
     case WM_CONTEXTMENU:PostMessageW(ownerWindow,menuRequest,0,0);return 0;
@@ -58,8 +52,9 @@ LRESULT CALLBACK panelProc(HWND window,UINT message,WPARAM wParam,LPARAM lParam)
     case WM_PRINTCLIENT:draw(window,reinterpret_cast<HDC>(wParam));return 0;
     case WM_ERASEBKGND:return 1;
     case WM_DESTROY:
+        tooltip.destroy();
         if(textFont)DeleteObject(textFont);
-        textFont=nullptr;panelWindow=nullptr;tooltipWindow=nullptr;details.clear();lastTheme=-1;return 0;
+        textFont=nullptr;panelWindow=nullptr;details.clear();lastTheme=-1;return 0;
     }
     return DefWindowProcW(window,message,wParam,lParam);
 }
@@ -93,10 +88,10 @@ void initializeTaskbarPanel(HINSTANCE instance,HWND owner,State& state,UINT expa
 
 void syncTaskbarPanel(bool visible) {
     require(model!=nullptr,L"任务栏信息尚未初始化。");
-    if(panelWindow && !IsWindow(panelWindow)){panelWindow=nullptr;tooltipWindow=nullptr;}
+    if(panelWindow && !IsWindow(panelWindow)){panelWindow=nullptr;tooltip.destroy();}
     auto slot=visible?taskbarSlot():TaskbarSlot{};
     if(!slot.host) {
-        if(panelWindow && IsWindowVisible(panelWindow)){SendMessageW(tooltipWindow,TTM_POP,0,0);ShowWindow(panelWindow,SW_HIDE);}
+        tooltip.hide();if(panelWindow && IsWindowVisible(panelWindow))ShowWindow(panelWindow,SW_HIDE);
         return;
     }
     if(panelWindow && GetWindow(panelWindow,GW_OWNER)!=slot.host)destroyTaskbarPanel();
@@ -116,15 +111,15 @@ void syncTaskbarPanel(bool visible) {
     auto info=model->compactInfo(nowSeconds());
     if(details!=info.details || lastTheme!=model->theme) {
         details=info.details;lastTheme=model->theme;SetWindowTextW(panelWindow,details.c_str());
-        TOOLINFOW tool{sizeof(tool)};tool.uFlags=TTF_IDISHWND|TTF_SUBCLASS;tool.hwnd=panelWindow;tool.uId=reinterpret_cast<UINT_PTR>(panelWindow);tool.lpszText=details.data();
-        SendMessageW(tooltipWindow,TTM_UPDATETIPTEXTW,0,reinterpret_cast<LPARAM>(&tool));InvalidateRect(panelWindow,nullptr,FALSE);
+        InvalidateRect(panelWindow,nullptr,FALSE);
     }
+    tooltip.update(panelWindow,details,rect,model->theme);
 }
 
 void destroyTaskbarPanel() {
     if(panelWindow && IsWindow(panelWindow))DestroyWindow(panelWindow);
     else if(textFont){DeleteObject(textFont);textFont=nullptr;}
-    panelWindow=nullptr;tooltipWindow=nullptr;details.clear();lastTheme=-1;
+    tooltip.destroy();panelWindow=nullptr;details.clear();lastTheme=-1;
 }
 
 HWND taskbarPanelWindow() { return panelWindow; }

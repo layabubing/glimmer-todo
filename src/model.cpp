@@ -87,11 +87,6 @@ void State::completeSchedule(uint64_t id, int64_t now) {
     std::stable_sort(schedules.begin(), schedules.end(), [](const Schedule& a, const Schedule& b) { return a.due < b.due; });
 }
 
-[[noreturn]] void fatal(const std::wstring& message) {
-    MessageBoxW(nullptr, message.c_str(), L"浮光待办 · 错误", MB_OK | MB_ICONERROR);
-    ExitProcess(1);
-}
-
 void require(bool condition, const std::wstring& message) {
     if (!condition) fatal(message + L"\nWindows 错误代码：" + std::to_wstring(GetLastError()));
 }
@@ -246,16 +241,12 @@ void State::load(const std::filesystem::path& file) {
     capsuleX = root.value("capsuleX", -1); capsuleY = root.value("capsuleY", -1);
     const auto& bounds = root.at("window");
     x = bounds.at("x").get<int>(); y = bounds.at("y").get<int>();
-    width = std::clamp(bounds.at("width").get<int>(), 240, 900);
-    height = std::clamp(bounds.at("height").get<int>(), 200, 1200);
-    if (root.value("layoutVersion", 1) < 2) {
-        width = 260;
-        height = 300;
-    }
+    width = std::clamp(bounds.at("width").get<int>(), 280, 900);
+    height = std::clamp(bounds.at("height").get<int>(), 280, 1200);
 }
 
 void State::save(const std::filesystem::path& file) const {
-    json root{{"version", 1}, {"layoutVersion", 2}, {"automatic", automatic}, {"topmost", topmost}, {"theme", theme},
+    json root{{"version", 1}, {"layoutVersion", 3}, {"automatic", automatic}, {"topmost", topmost}, {"theme", theme},
         {"collapseMode", static_cast<int>(collapseMode)}, {"capsuleX", capsuleX}, {"capsuleY", capsuleY},
         {"window", {{"x", x}, {"y", y}, {"width", width}, {"height", height}}},
         {"tasks", json::array()}, {"rules", json::array()}, {"schedules", json::array()}};
