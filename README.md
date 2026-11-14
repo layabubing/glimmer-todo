@@ -2,7 +2,7 @@
 
 Windows 桌面悬浮待办、日程与番茄钟工具，使用 C++20 和 Windows 原生界面。支持 Windows 10 1703 及以上版本、Windows 11，要求 x64 系统。
 
-用浏览器打开 [产品宣传片](promo/index.html) 即可离线播放，时长 36 秒。
+产品宣传片时长 36 秒，提供 [4K 60 FPS 视频](promo/glimmer-todo-4k60.mp4) 和支持章节跳转的 [离线网页](promo/index.html)。
 
 ## 下载
 
