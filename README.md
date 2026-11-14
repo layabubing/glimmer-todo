@@ -2,6 +2,8 @@
 
 Windows 桌面悬浮待办、日程与番茄钟工具，使用 C++20 和 Windows 原生界面。支持 Windows 10 1703 及以上版本、Windows 11，要求 x64 系统。
 
+用浏览器打开 [产品宣传片](promo/index.html) 即可离线播放，时长 36 秒。
+
 ## 下载
 
 从本仓库的 Releases 页面下载 `GlimmerTodo-v1.4.2-windows-x64.zip`，解压后双击 `GlimmerTodo.exe` 运行。
