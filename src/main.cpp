@@ -2,36 +2,44 @@
 #include "virtual_desktop.hpp"
 #include "updater.hpp"
 #include "version.hpp"
+#include "theme.hpp"
 #include <windowsx.h>
 #include <commctrl.h>
 #include <commdlg.h>
 #include <shellapi.h>
 #include <shlobj.h>
 #include <dwmapi.h>
+#include <uxtheme.h>
+#include <array>
 
 namespace {
-constexpr COLORREF Paper = RGB(248, 249, 246), Ink = RGB(39, 57, 49);
-constexpr COLORREF Muted = RGB(118, 130, 121), Green = RGB(54, 108, 80), Soft = RGB(231, 239, 231);
+Palette colors = themePalette(0);
+COLORREF &Paper=colors.background, &Surface=colors.surface, &Ink=colors.text, &Muted=colors.muted;
+COLORREF &Green=colors.accent, &Soft=colors.selected, &Border=colors.border, &Track=colors.track, &OnAccent=colors.onAccent;
 constexpr UINT TrayMessage = WM_APP + 1, ForegroundMessage = WM_APP + 2;
 constexpr UINT ShowRequest = WM_APP + 3;
 constexpr int AddId = 101, InputId = 102, ListId = 103, SettingsId = 104, HideId = 105;
 constexpr int AutoId = 201, TopId = 202, RulesId = 203, RuleInputId = 204, RuleAddId = 205, BrowseId = 206, RemoveId = 207;
-constexpr int UpdateId = 208;
-constexpr int TabsId = 110, ScheduleListId = 111, ScheduleAddId = 112, ScheduleSaveId = 113;
+constexpr int UpdateId = 208, ThemeId = 209, ThemeChoiceId = 210;
+constexpr int ScheduleListId = 111, ScheduleAddId = 112, ScheduleSaveId = 113, ViewFirstId = 114;
 constexpr int PomoStartId = 120, PomoResetId = 121, PomoSkipId = 122, PomoConfigId = 123;
 constexpr int MenuShow = 301, MenuAuto = 302, MenuTop = 303, MenuSettings = 304, MenuExit = 305, MenuClear = 306;
 HINSTANCE instance;
-HWND mainWindow, taskList, input, addButton, settingsButton, hideButton;
+HWND mainWindow, taskList, input, addButton, settingsButton, hideButton, themeButton, themeChoice;
 HWND settingsWindow, rulesList, ruleInput, automaticBox, topmostBox;
 HWND fileDialog;
 HWND updateButton, updateLabel;
-HWND tabs, scheduleList, scheduleAdd, scheduleWindow, scheduleText, scheduleDate, scheduleTime, scheduleRepeat;
+HWND scheduleList, scheduleAdd, scheduleWindow, scheduleText, scheduleDate, scheduleTime, scheduleRepeat;
+std::array<HWND,3> viewButtons{};
 int activeView = 0;
+ULONGLONG transitionStarted = 0;
+double navigationPosition = 0, navigationFrom = 0;
+int contentOffset = 0;
 uint64_t scheduleEditingId = 0;
 ULONGLONG nextNotice = 0;
 HWND pomoPhase, pomoClock, pomoCount, pomoStart, pomoReset, pomoSkip, pomoFocus, pomoShort, pomoLong, pomoConfig;
 std::vector<HWND> pomoControls;
-HFONT bodyFont, smallFont, rowFont, doneFont, clockFont;
+HFONT bodyFont, smallFont, rowFont, doneFont, clockFont, titleFont;
 HBRUSH paperBrush, whiteBrush;
 HICON appIcon;
 HWINEVENTHOOK foregroundHook;
@@ -63,13 +71,14 @@ HFONT makeFont(int height, int weight = FW_NORMAL, bool strike = false) {
 }
 
 void fonts() {
-    for (auto font : {bodyFont, smallFont, rowFont, doneFont, clockFont}) if (font) DeleteObject(font);
+    for (auto font : {bodyFont, smallFont, rowFont, doneFont, clockFont, titleFont}) if (font) DeleteObject(font);
     bodyFont = makeFont(12); smallFont = makeFont(10);
-    rowFont = makeFont(12); doneFont = makeFont(12, FW_NORMAL, true);
-    clockFont = makeFont(32,FW_SEMIBOLD);
-    for (auto window : {input, addButton, settingsButton, hideButton}) if (window) SendMessageW(window, WM_SETFONT, reinterpret_cast<WPARAM>(bodyFont), TRUE);
-    if (taskList) { SendMessageW(taskList, WM_SETFONT, reinterpret_cast<WPARAM>(rowFont), TRUE); SendMessageW(taskList, LB_SETITEMHEIGHT, 0, px(32)); }
-    if (scheduleList) SendMessageW(scheduleList,LB_SETITEMHEIGHT,0,px(52));
+    rowFont = makeFont(13); doneFont = makeFont(13, FW_NORMAL, true);
+    clockFont = makeFont(34,FW_SEMIBOLD); titleFont = makeFont(15,FW_SEMIBOLD);
+    for (auto window : {input, addButton, settingsButton, hideButton,themeButton}) if (window) SendMessageW(window, WM_SETFONT, reinterpret_cast<WPARAM>(bodyFont), TRUE);
+    for(auto window:viewButtons)if(window)SendMessageW(window,WM_SETFONT,reinterpret_cast<WPARAM>(bodyFont),TRUE);
+    if (taskList) { SendMessageW(taskList, WM_SETFONT, reinterpret_cast<WPARAM>(rowFont), TRUE); SendMessageW(taskList, LB_SETITEMHEIGHT, 0, px(40)); }
+    if (scheduleList) SendMessageW(scheduleList,LB_SETITEMHEIGHT,0,px(58));
     for(auto window:pomoControls)SendMessageW(window,WM_SETFONT,reinterpret_cast<WPARAM>(window==pomoClock?clockFont:bodyFont),TRUE);
 }
 
@@ -108,6 +117,8 @@ void evaluateForeground();
 void openSchedule(uint64_t id = 0);
 void layout();
 void refreshPomodoro();
+void applyTheme();
+void chooseTheme();
 
 void notify(const std::wstring& title, const std::wstring& message) {
     NOTIFYICONDATAW info = tray; info.uFlags = NIF_INFO;
@@ -138,15 +149,33 @@ void scheduleNotices() {
 }
 
 void selectView(int view) {
+    if (view < 0 || view > 2) return;
+    bool animate = ready && view != activeView && IsWindowVisible(mainWindow);
+    BOOL motion = TRUE; SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION,0,&motion,0);
+    animate = animate && motion;
+    navigationFrom = navigationPosition;
     activeView = view;
+    transitionStarted = animate ? GetTickCount64() : 0;
+    contentOffset = animate ? px(7) : 0;
+    if(animate)require(SetTimer(mainWindow,2,16,nullptr)!=0,L"无法启动页面动画。");
+    else {KillTimer(mainWindow,2); navigationPosition=view;}
     for (auto window : {taskList, input, addButton}) ShowWindow(window, view == 0 ? SW_SHOWNA : SW_HIDE);
     for (auto window : {scheduleList, scheduleAdd}) ShowWindow(window, view == 1 ? SW_SHOWNA : SW_HIDE);
     for(auto window:pomoControls)ShowWindow(window,view==2?SW_SHOWNA:SW_HIDE);
     if(view==2) {
         RECT bounds{};GetWindowRect(mainWindow,&bounds);
-        if(bounds.bottom-bounds.top<px(300))SetWindowPos(mainWindow,nullptr,0,0,bounds.right-bounds.left,px(300),SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);
+        if(bounds.bottom-bounds.top<px(320))SetWindowPos(mainWindow,nullptr,0,0,bounds.right-bounds.left,px(320),SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);
         refreshPomodoro();
     }
+    layout();
+    for(auto button:viewButtons)InvalidateRect(button,nullptr,TRUE);
+}
+
+void animateView() {
+    double progress=transitionProgress(GetTickCount64()-transitionStarted);
+    navigationPosition=navigationFrom+(activeView-navigationFrom)*progress;
+    contentOffset=static_cast<int>(px(7)*(1.0-progress));
+    if(progress>=1.0) {KillTimer(mainWindow,2);transitionStarted=0;contentOffset=0;}
     layout();
 }
 
@@ -213,11 +242,17 @@ LRESULT CALLBACK inputProc(HWND window, UINT message, WPARAM wParam, LPARAM lPar
 
 LRESULT CALLBACK listProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR, DWORD_PTR) {
     if (message == WM_GETDLGCODE && wParam == VK_RETURN) return DLGC_WANTALLKEYS;
-    if (message == WM_PAINT && (window == taskList ? state.tasks.empty() : state.schedules.empty())) {
-        PAINTSTRUCT paint{}; auto dc = BeginPaint(window, &paint);
+    if ((message == WM_PAINT||message==WM_PRINTCLIENT||message==WM_PRINT) && (window == taskList ? state.tasks.empty() : state.schedules.empty())) {
+        PAINTSTRUCT paint{}; auto dc = message==WM_PAINT?BeginPaint(window, &paint):reinterpret_cast<HDC>(wParam);
         RECT rect{}; GetClientRect(window, &rect); FillRect(dc, &rect, paperBrush);
-        label(dc, window == taskList ? L"暂无待办" : L"暂无日程", {0,rect.bottom / 2 - px(12),rect.right,rect.bottom / 2 + px(12)}, bodyFont, Muted, DT_CENTER|DT_SINGLELINE|DT_VCENTER);
-        EndPaint(window, &paint); return 0;
+        int center=rect.bottom/2;
+        if(rect.bottom>px(100)) {
+            int x=rect.right/2;rounded(dc,{x-px(20),center-px(48),x+px(20),center-px(8)},Soft,40,Soft);checkMark(dc,x-px(5),center-px(32),Green);
+            label(dc,L"在下方添加，安排今天",{0,center+px(20),rect.right,center+px(42)},smallFont,Muted,DT_CENTER|DT_SINGLELINE|DT_VCENTER);
+        }
+        label(dc, window == taskList ? L"暂无待办" : L"暂无日程", {0,center-px(4),rect.right,center+px(20)}, bodyFont, Ink, DT_CENTER|DT_SINGLELINE|DT_VCENTER);
+        if(message==WM_PAINT)EndPaint(window, &paint);
+        return 0;
     }
     if (window == scheduleList) {
         auto act = [&](int action) {
@@ -262,6 +297,8 @@ LRESULT CALLBACK listProc(HWND window, UINT message, WPARAM wParam, LPARAM lPara
 }
 
 HWND child(const wchar_t* type, const wchar_t* text, DWORD style, HWND parent, int id) {
+    bool button = lstrcmpW(type,L"BUTTON")==0;
+    if(button && (style&BS_TYPEMASK)!=BS_AUTOCHECKBOX)style=(style&~BS_TYPEMASK)|BS_OWNERDRAW;
     HWND window = CreateWindowExW(0, type, text, WS_CHILD | WS_VISIBLE | style, 0, 0, 1, 1,
         parent, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), instance, nullptr);
     require(window != nullptr, L"无法创建界面控件。");
@@ -269,10 +306,99 @@ HWND child(const wchar_t* type, const wchar_t* text, DWORD style, HWND parent, i
     return window;
 }
 
+LRESULT CALLBACK buttonProc(HWND window,UINT message,WPARAM wParam,LPARAM lParam,UINT_PTR,DWORD_PTR) {
+    if(message==WM_MOUSEMOVE && !GetPropW(window,L"Glimmer.Hover")) {
+        SetPropW(window,L"Glimmer.Hover",reinterpret_cast<HANDLE>(1));
+        TRACKMOUSEEVENT tracking{sizeof(tracking),TME_LEAVE,window,0};TrackMouseEvent(&tracking);InvalidateRect(window,nullptr,FALSE);
+    }
+    if(message==WM_MOUSELEAVE) {RemovePropW(window,L"Glimmer.Hover");InvalidateRect(window,nullptr,FALSE);}
+    if(message==WM_NCDESTROY)RemovePropW(window,L"Glimmer.Hover");
+    if(message==WM_KEYDOWN && GetDlgCtrlID(window)>=ViewFirstId && GetDlgCtrlID(window)<ViewFirstId+3 && (wParam==VK_LEFT||wParam==VK_RIGHT)) {
+        int view=(activeView+(wParam==VK_RIGHT?1:2))%3;selectView(view);SetFocus(viewButtons[view]);return 0;
+    }
+    if((message==WM_PAINT||message==WM_PRINTCLIENT||message==WM_PRINT) && (GetWindowLongPtrW(window,GWL_STYLE)&BS_TYPEMASK)==BS_AUTOCHECKBOX) {
+        PAINTSTRUCT paint{};HDC dc=message==WM_PAINT?BeginPaint(window,&paint):reinterpret_cast<HDC>(wParam);RECT bounds{};GetClientRect(window,&bounds);fill(dc,bounds,Paper);
+        bool checked=Button_GetCheck(window)==BST_CHECKED;int y=(bounds.bottom-px(16))/2;
+        rounded(dc,{0,y,px(16),y+px(16)},checked?Green:Surface,4,checked?Green:Border);
+        if(checked)checkMark(dc,px(3),y+px(3),OnAccent);
+        label(dc,textOf(window),{px(24),0,bounds.right,bounds.bottom},bodyFont,Ink);
+        if(GetFocus()==window){RECT focus{px(22),px(2),bounds.right-px(2),bounds.bottom-px(2)};DrawFocusRect(dc,&focus);}
+        if(message==WM_PAINT)EndPaint(window,&paint);
+        return 0;
+    }
+    return DefSubclassProc(window,message,wParam,lParam);
+}
+
+LRESULT CALLBACK headerProc(HWND window,UINT message,WPARAM wParam,LPARAM lParam,UINT_PTR,DWORD_PTR) {
+    if(message==WM_PAINT||message==WM_PRINT||message==WM_PRINTCLIENT) {
+        PAINTSTRUCT paint{};HDC dc=message==WM_PAINT?BeginPaint(window,&paint):reinterpret_cast<HDC>(wParam);
+        RECT bounds{};GetClientRect(window,&bounds);fill(dc,bounds,Track);
+        for(int i=0;i<Header_GetItemCount(window);++i) {
+            wchar_t text[128]{};HDITEMW item{};item.mask=HDI_TEXT;item.pszText=text;item.cchTextMax=128;Header_GetItem(window,i,&item);
+            RECT rect{};Header_GetItemRect(window,i,&rect);rect.left+=px(8);label(dc,text,rect,smallFont,Muted);
+            fill(dc,{rect.right-1,rect.top,rect.right,rect.bottom},Border);
+        }
+        if(message==WM_PAINT)EndPaint(window,&paint);
+        return 0;
+    }
+    return DefSubclassProc(window,message,wParam,lParam);
+}
+
+void themeWindow(HWND window) {
+    if(!window)return;
+    BOOL dark=state.theme==1;DwmSetWindowAttribute(window,20,&dark,sizeof(dark));
+    DwmSetWindowAttribute(window,34,&Border,sizeof(Border));
+    DwmSetWindowAttribute(window,35,&Paper,sizeof(Paper));DwmSetWindowAttribute(window,36,&Ink,sizeof(Ink));
+    EnumChildWindows(window,[](HWND control,LPARAM)->BOOL {
+        wchar_t name[64]{};GetClassNameW(control,name,64);
+        if(lstrcmpiW(name,L"BUTTON")==0)SetWindowSubclass(control,buttonProc,10,0);
+        if(lstrcmpiW(name,L"EDIT")==0||lstrcmpiW(name,L"COMBOBOX")==0)SetWindowTheme(control,L"",L"");
+        SendMessageW(control,WM_SETFONT,reinterpret_cast<WPARAM>(control==pomoClock?clockFont:bodyFont),FALSE);
+        return TRUE;
+    },0);
+    RedrawWindow(window,nullptr,nullptr,RDW_INVALIDATE|RDW_ERASE|RDW_ALLCHILDREN|RDW_FRAME);
+}
+
+void applyTheme() {
+    colors=themePalette(state.theme);
+    if(paperBrush)DeleteObject(paperBrush);
+    if(whiteBrush)DeleteObject(whiteBrush);
+    paperBrush=CreateSolidBrush(Paper);whiteBrush=CreateSolidBrush(Surface);
+    if(rulesList) {
+        SetWindowTheme(rulesList,L"",L"");ListView_SetBkColor(rulesList,Surface);ListView_SetTextBkColor(rulesList,Surface);ListView_SetTextColor(rulesList,Ink);
+        SetWindowSubclass(ListView_GetHeader(rulesList),headerProc,11,0);
+    }
+    for(auto window:{mainWindow,settingsWindow,scheduleWindow})themeWindow(window);
+    if(themeChoice)SendMessageW(themeChoice,CB_SETCURSEL,state.theme,0);
+    for(auto date:{scheduleDate,scheduleTime})if(IsWindow(date)) {
+        DateTime_SetMonthCalColor(date,MCSC_BACKGROUND,Surface);DateTime_SetMonthCalColor(date,MCSC_MONTHBK,Surface);DateTime_SetMonthCalColor(date,MCSC_TEXT,Ink);
+        DateTime_SetMonthCalColor(date,MCSC_TITLEBK,Green);DateTime_SetMonthCalColor(date,MCSC_TITLETEXT,OnAccent);
+    }
+}
+
+void chooseTheme() {
+    HMENU popup=CreatePopupMenu();
+    const wchar_t* names[]={L"晨光 · 浅色",L"夜色 · 深色",L"森林 · 绿色"};
+    for(int i=0;i<3;++i)AppendMenuW(popup,MF_STRING|(state.theme==i?MF_CHECKED:0),500+i,names[i]);
+    RECT button{};GetWindowRect(themeButton,&button);
+    int selected=TrackPopupMenu(popup,TPM_RETURNCMD|TPM_RIGHTALIGN,button.right,button.bottom+px(4),0,mainWindow,nullptr);DestroyMenu(popup);
+    if(selected>=500&&selected<503) {state.theme=selected-500;save();applyTheme();}
+}
+
+LRESULT controlColor(UINT message,WPARAM wParam,LPARAM lParam=0) {
+    HDC dc=reinterpret_cast<HDC>(wParam);SetTextColor(dc,Ink);
+    COLORREF background=message==WM_CTLCOLOREDIT||message==WM_CTLCOLORLISTBOX?Surface:Paper;
+    HWND control=reinterpret_cast<HWND>(lParam);
+    if(control==pomoClock||control==pomoPhase||control==pomoCount)background=Surface;
+    SetBkColor(dc,background);return reinterpret_cast<LRESULT>(background==Surface?whiteBrush:paperBrush);
+}
+
+void drawItem(const DRAWITEMSTRUCT* item);
+
 void refreshPomodoro() {
     auto& p=state.pomodoro;
     auto seconds=p.secondsLeft(nowSeconds()); wchar_t clock[32]; swprintf_s(clock,L"%02d:%02d",seconds/60,seconds%60);
-    if(textOf(pomoClock)!=clock)SetWindowTextW(pomoClock,clock);
+    if(textOf(pomoClock)!=clock){SetWindowTextW(pomoClock,clock);InvalidateRect(mainWindow,nullptr,FALSE);}
     const wchar_t* phase=p.phase==0?L"专注":p.phase==1?L"短休息":L"长休息";
     SetWindowTextW(pomoPhase,phase);
     auto count=L"今日完成 "+std::to_wstring(p.todayCount)+L"  ·  本轮 "+std::to_wstring(p.cycle)+L"/4";
@@ -339,8 +465,10 @@ LRESULT CALLBACK scheduleProc(HWND window, UINT message, WPARAM wParam, LPARAM l
     }
     if (message == WM_COMMAND && LOWORD(wParam) == IDCANCEL) { DestroyWindow(window); return 0; }
     if (message == WM_CLOSE) { DestroyWindow(window); return 0; }
-    if (message == WM_DESTROY) { scheduleWindow=nullptr; return 0; }
-    if (message == WM_CTLCOLORSTATIC) { SetBkColor(reinterpret_cast<HDC>(wParam),Paper); return reinterpret_cast<LRESULT>(paperBrush); }
+    if (message == WM_DESTROY) { scheduleWindow=nullptr;scheduleDate=nullptr;scheduleTime=nullptr;return 0; }
+    if (message == WM_DRAWITEM) {drawItem(reinterpret_cast<DRAWITEMSTRUCT*>(lParam));return TRUE;}
+    if (message == WM_CTLCOLORSTATIC||message==WM_CTLCOLOREDIT||message==WM_CTLCOLORBTN||message==WM_CTLCOLORLISTBOX)return controlColor(message,wParam);
+    if(message==WM_ERASEBKGND){RECT bounds{};GetClientRect(window,&bounds);FillRect(reinterpret_cast<HDC>(wParam),&bounds,paperBrush);return 1;}
     return DefWindowProcW(window,message,wParam,lParam);
 }
 
@@ -356,76 +484,100 @@ void openSchedule(uint64_t id) {
     int64_t due=nowSeconds()+3600; int repeat=0;
     if (id) for (const auto& event : state.schedules) if (event.id==id) { due=event.due; repeat=event.repeat; SetWindowTextW(scheduleText,event.text.c_str()); }
     auto local=localTime(due); DateTime_SetSystemtime(scheduleDate,GDT_VALID,&local); DateTime_SetSystemtime(scheduleTime,GDT_VALID,&local);
-    SendMessageW(scheduleRepeat,CB_SETCURSEL,repeat,0); ShowWindow(scheduleWindow,SW_SHOW); SetFocus(scheduleText);
+    SendMessageW(scheduleRepeat,CB_SETCURSEL,repeat,0);applyTheme(); ShowWindow(scheduleWindow,SW_SHOW); SetFocus(scheduleText);
 }
 
 void layout() {
     RECT bounds{}; GetClientRect(mainWindow, &bounds);
     int width = bounds.right, height = bounds.bottom;
-    MoveWindow(settingsButton, width - px(84), px(6), px(38), px(26), TRUE);
-    MoveWindow(hideButton, width - px(44), px(6), px(36), px(26), TRUE);
-    MoveWindow(tabs, px(8), px(36), width - px(16), px(27), TRUE);
-    MoveWindow(taskList, px(8), px(68), width - px(16), (std::max)(px(32), height - px(116)), TRUE);
-    MoveWindow(scheduleList, px(8), px(68), width - px(16), (std::max)(px(32), height - px(116)), TRUE);
-    MoveWindow(scheduleAdd, px(8), height - px(39), width - px(16), px(30), TRUE);
-    MoveWindow(input, px(16), height - px(33), width - px(66), px(20), TRUE);
-    MoveWindow(addButton, width - px(43), height - px(36), px(28), px(26), TRUE);
+    MoveWindow(themeButton,width-px(124),px(10),px(36),px(28),TRUE);
+    MoveWindow(settingsButton, width - px(84), px(10), px(36), px(28), TRUE);
+    MoveWindow(hideButton, width - px(44), px(10), px(34), px(28), TRUE);
+    int segment=(width-px(28))/3;
+    for(int i=0;i<3;++i)MoveWindow(viewButtons[i],px(14)+i*segment,px(49),segment,px(28),TRUE);
+    MoveWindow(taskList, px(12), px(90)+contentOffset, width - px(24), (std::max)(px(32), height - px(142)), TRUE);
+    MoveWindow(scheduleList, px(12), px(90)+contentOffset, width - px(24), (std::max)(px(32), height - px(142)), TRUE);
+    MoveWindow(scheduleAdd, px(12), height - px(42)+contentOffset, width - px(24), px(32), TRUE);
+    MoveWindow(input, px(22), height - px(34)+contentOffset, width - px(80), px(20), TRUE);
+    MoveWindow(addButton, width - px(48), height - px(39)+contentOffset, px(32), px(30), TRUE);
     if(pomoClock) {
-        const int positions[]={76,100,150,178,178,178,216,216,216,238,238,238,270};
-        const int heights[]={22,45,22,28,28,28,18,18,18,24,24,24,24};
+        const int positions[]={96,116,162,198,198,198,238,238,238,260,260,260,292};
+        const int heights[]={18,42,18,30,30,30,18,18,18,26,26,26,26};
         int column=(width-px(32))/3;
         for(size_t index=0;index<pomoControls.size();++index) {
-            if(index==0||index==1||index==2||index==12)MoveWindow(pomoControls[index],px(8),px(positions[index]),width-px(16),px(heights[index]),TRUE);
-            else {int c=index>=9?static_cast<int>(index)-9:index>=6?static_cast<int>(index)-6:static_cast<int>(index)-3;MoveWindow(pomoControls[index],px(8)+c*(column+px(8)),px(positions[index]),column,px(heights[index]),TRUE);}
+            if(index==0||index==1||index==2||index==12)MoveWindow(pomoControls[index],px(16),px(positions[index])+contentOffset,width-px(32),px(heights[index]),TRUE);
+            else {int c=index>=9?static_cast<int>(index)-9:index>=6?static_cast<int>(index)-6:static_cast<int>(index)-3;MoveWindow(pomoControls[index],px(8)+c*(column+px(8)),px(positions[index])+contentOffset,column,px(heights[index]),TRUE);}
         }
     }
     InvalidateRect(mainWindow, nullptr, TRUE);
 }
 
-void paintMain(HWND window) {
-    PAINTSTRUCT paint{}; HDC target = BeginPaint(window, &paint);
+void drawMain(HWND window,HDC target) {
     RECT rect{}; GetClientRect(window, &rect);
     HDC dc = CreateCompatibleDC(target); HBITMAP bitmap = CreateCompatibleBitmap(target, rect.right, rect.bottom);
     auto previous = SelectObject(dc, bitmap); FillRect(dc, &rect, paperBrush);
     const int width = rect.right, height = rect.bottom;
     COLORREF indicator = state.automatic ? Green : Muted;
-    rounded(dc, {px(12), px(16), px(18), px(22)}, indicator, 6, indicator);
-    label(dc, L"待办", {px(24), px(6), px(54), px(32)}, bodyFont, Ink);
-    size_t done = std::count_if(state.tasks.begin(), state.tasks.end(), [](const Task& task) { return task.done; });
-    label(dc, std::to_wstring(done) + L"/" + std::to_wstring(state.tasks.size()), {px(58), px(6), width - px(90), px(32)}, smallFont, Muted);
-    if (activeView == 0) rounded(dc, {px(8), height - px(42), width - px(8), height - px(7)}, RGB(255,255,255), 6, RGB(225,230,223));
+    rounded(dc, {px(14), px(20), px(20), px(26)}, indicator, 6, indicator);
+    label(dc, L"浮光", {px(27), px(10), width-px(128), px(37)}, titleFont, Ink);
+    rounded(dc,{px(12),px(46),width-px(12),px(81)},Track,12,Track);
+    int segment=(width-px(28))/3;
+    int marker=px(14)+static_cast<int>(navigationPosition*segment);
+    rounded(dc,{marker+px(12),px(79),marker+segment-px(12),px(82)},Green,3,Green);
+    if (activeView == 0) rounded(dc, {px(12), height - px(44)+contentOffset, width - px(12), height - px(8)+contentOffset}, Surface, 10, Border);
+    if(activeView==2) {
+        rounded(dc,{px(12),px(90)+contentOffset,width-px(12),px(186)+contentOffset},Surface,14,Border);
+        int total=state.pomodoro.duration();double fraction=1.0-static_cast<double>(state.pomodoro.secondsLeft(nowSeconds()))/total;
+        int end=px(24)+static_cast<int>((width-px(48))*std::clamp(fraction,0.0,1.0));
+        rounded(dc,{px(24),px(181)+contentOffset,width-px(24),px(184)+contentOffset},Track,3,Track);
+        if(end>px(24))rounded(dc,{px(24),px(181)+contentOffset,end,px(184)+contentOffset},Green,3,Green);
+    }
     BitBlt(target, 0, 0, rect.right, rect.bottom, dc, 0, 0, SRCCOPY);
-    SelectObject(dc, previous); DeleteObject(bitmap); DeleteDC(dc); EndPaint(window, &paint);
+    SelectObject(dc, previous); DeleteObject(bitmap); DeleteDC(dc);
+}
+
+void paintMain(HWND window) {
+    PAINTSTRUCT paint{};HDC target=BeginPaint(window,&paint);drawMain(window,target);EndPaint(window,&paint);
 }
 
 void drawItem(const DRAWITEMSTRUCT* item) {
     if (item->CtlID == ScheduleListId) {
         if (item->itemID == static_cast<UINT>(-1) || item->itemID >= state.schedules.size()) return;
-        const auto& event = state.schedules[item->itemID]; auto row = item->rcItem;
-        fill(item->hDC, row, item->itemState & ODS_SELECTED ? Soft : Paper);
-        int x = row.left + px(7), y = row.top + px(18);
-        rounded(item->hDC, {x,y,x+px(14),y+px(14)}, event.done ? Green : Paper, 3, event.done ? Green : Muted);
-        if (event.done) checkMark(item->hDC,x+px(2),y+px(2),RGB(255,255,255));
-        label(item->hDC,event.text,{row.left+px(30),row.top+px(3),row.right-px(26),row.top+px(25)},event.done?doneFont:bodyFont,event.done?Muted:Ink);
+        const auto& event = state.schedules[item->itemID]; auto row = item->rcItem;fill(item->hDC,row,Paper);row.bottom-=px(5);
+        rounded(item->hDC,row,item->itemState&ODS_SELECTED?Soft:Surface,10,item->itemState&ODS_SELECTED?Green:Border);
+        int x = row.left + px(9), y = row.top + px(19);
+        rounded(item->hDC, {x,y,x+px(14),y+px(14)}, event.done ? Green : Surface, 4, event.done ? Green : Border);
+        if (event.done) checkMark(item->hDC,x+px(2),y+px(2),OnAccent);
+        label(item->hDC,event.text,{row.left+px(32),row.top+px(4),row.right-px(26),row.top+px(27)},event.done?doneFont:rowFont,event.done?Muted:Ink);
         auto time = formatDate(event.due) + (event.repeat == 1 ? L" · 每天" : event.repeat == 2 ? L" · 每周" : L"");
-        label(item->hDC,time,{row.left+px(30),row.top+px(26),row.right-px(4),row.bottom-px(2)},smallFont,event.due<nowSeconds()&&!event.done?Green:Muted);
+        label(item->hDC,time,{row.left+px(32),row.top+px(27),row.right-px(4),row.bottom-px(3)},smallFont,event.due<nowSeconds()&&!event.done?Green:Muted);
         label(item->hDC,L"×",{row.right-px(24),row.top,row.right-px(4),row.top+px(26)},bodyFont,Muted,DT_CENTER|DT_VCENTER|DT_SINGLELINE);
     } else if (item->CtlID == ListId) {
         if (item->itemID == static_cast<UINT>(-1) || item->itemID >= state.tasks.size()) return;
         const auto& task = state.tasks[item->itemID];
         RECT row = item->rcItem;
-        fill(item->hDC, row, (item->itemState & ODS_SELECTED) ? Soft : Paper);
-        fill(item->hDC, {row.left, row.bottom - 1, row.right, row.bottom}, RGB(235,238,233));
-        int x = row.left + px(7), y = row.top + px(9);
-        rounded(item->hDC, {x,y,x+px(14),y+px(14)}, task.done ? Green : Paper, 3, task.done ? Green : RGB(183,195,184));
-        if (task.done) checkMark(item->hDC, x+px(2), y+px(2), RGB(255,255,255));
-        label(item->hDC, task.text, {row.left+px(30),row.top,row.right-px(26),row.bottom}, task.done ? doneFont : rowFont, task.done ? Muted : Ink);
+        fill(item->hDC,row,Paper);row.bottom-=px(5);
+        rounded(item->hDC,row,item->itemState&ODS_SELECTED?Soft:Surface,10,item->itemState&ODS_SELECTED?Green:Border);
+        int x = row.left + px(9), y = row.top + px(10);
+        rounded(item->hDC, {x,y,x+px(14),y+px(14)}, task.done ? Green : Surface, 4, task.done ? Green : Border);
+        if (task.done) checkMark(item->hDC, x+px(2), y+px(2), OnAccent);
+        label(item->hDC, task.text, {row.left+px(32),row.top,row.right-px(26),row.bottom}, task.done ? doneFont : rowFont, task.done ? Muted : Ink);
         label(item->hDC, L"×", {row.right-px(24),row.top,row.right-px(4),row.bottom}, bodyFont, Muted, DT_CENTER|DT_VCENTER|DT_SINGLELINE);
-    } else if (item->CtlID == AddId || item->CtlID == SettingsId || item->CtlID == HideId) {
-        bool primary = item->CtlID == AddId;
-        COLORREF background = primary ? ((item->itemState & ODS_SELECTED) ? RGB(39,85,61) : Green) : Paper;
-        rounded(item->hDC, item->rcItem, background, 5, background);
-        label(item->hDC, textOf(item->hwndItem), item->rcItem, bodyFont, primary ? RGB(255,255,255) : Muted, DT_CENTER|DT_VCENTER|DT_SINGLELINE);
+    } else if (item->CtlType==ODT_BUTTON) {
+        bool navigation=item->CtlID>=ViewFirstId&&item->CtlID<ViewFirstId+3;
+        bool active=navigation&&static_cast<int>(item->CtlID)-ViewFirstId==activeView;
+        bool toolbar=item->CtlID==ThemeId||item->CtlID==SettingsId||item->CtlID==HideId;
+        bool primary=item->CtlID==AddId||item->CtlID==PomoStartId||item->CtlID==ScheduleSaveId||item->CtlID==ScheduleAddId||item->CtlID==RuleAddId;
+        bool hovered=GetPropW(item->hwndItem,L"Glimmer.Hover")!=nullptr;
+        bool pressed=item->itemState&ODS_SELECTED;
+        auto background=navigation?(active?Surface:Track):primary?Green:(hovered||pressed)?Soft:toolbar?Paper:Surface;
+        auto foreground=primary?OnAccent:active?Green:toolbar||navigation?Muted:Ink;
+        if(item->itemState&ODS_DISABLED){background=Track;foreground=Muted;}
+        fill(item->hDC,item->rcItem,navigation?Track:Paper);
+        RECT button=item->rcItem;if(navigation)InflateRect(&button,-px(2),-px(2));
+        if(pressed)OffsetRect(&button,0,px(1));
+        rounded(item->hDC,button,background,10,navigation||toolbar||primary?background:Border);
+        label(item->hDC, textOf(item->hwndItem), button, bodyFont, foreground, DT_CENTER|DT_VCENTER|DT_SINGLELINE);
         if (item->itemState & ODS_FOCUS) { RECT focus = item->rcItem; InflateRect(&focus, -px(3), -px(3)); DrawFocusRect(item->hDC, &focus); }
     }
 }
@@ -588,18 +740,27 @@ LRESULT CALLBACK settingsProc(HWND window, UINT message, WPARAM wParam, LPARAM l
         MoveWindow(remove,px(14),px(334),px(120),px(28),TRUE);
         auto note=child(L"STATIC",L"勾选启用检测 · 修改后自动保存\nCS 1.6 / Source 与同名 Half-Life 进程共用规则。",0,window,-1);
         MoveWindow(note,px(14),px(372),px(412),px(34),TRUE);
+        auto appearance=child(L"STATIC",L"外观主题",0,window,-1);MoveWindow(appearance,px(14),px(420),px(68),px(26),TRUE);
+        themeChoice=child(L"COMBOBOX",L"外观主题",WS_TABSTOP|CBS_DROPDOWNLIST,window,ThemeChoiceId);
+        MoveWindow(themeChoice,px(88),px(418),px(230),px(130),TRUE);
+        for(auto text:{L"晨光 · 浅色",L"夜色 · 深色",L"森林 · 绿色"})SendMessageW(themeChoice,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(text));
+        SendMessageW(themeChoice,CB_SETCURSEL,state.theme,0);
         updateLabel=child(L"STATIC",L"",0,window,-1);
-        MoveWindow(updateLabel,px(14),px(418),px(290),px(42),TRUE);
+        MoveWindow(updateLabel,px(14),px(468),px(290),px(42),TRUE);
         updateButton=child(L"BUTTON",L"检查更新",WS_TABSTOP,window,UpdateId);
-        MoveWindow(updateButton,px(316),px(420),px(110),px(28),TRUE);
+        MoveWindow(updateButton,px(316),px(468),px(110),px(30),TRUE);
         refreshUpdate();
         refreshRules(); return 0;
     }
     case WM_CTLCOLORSTATIC:
     case WM_CTLCOLORBTN:
-        SetBkColor(reinterpret_cast<HDC>(wParam), Paper); SetTextColor(reinterpret_cast<HDC>(wParam), Ink); return reinterpret_cast<LRESULT>(paperBrush);
+    case WM_CTLCOLOREDIT:
+    case WM_CTLCOLORLISTBOX:
+        return controlColor(message,wParam,lParam);
+    case WM_DRAWITEM:drawItem(reinterpret_cast<DRAWITEMSTRUCT*>(lParam));return TRUE;
     case WM_COMMAND:
         switch (LOWORD(wParam)) {
+        case ThemeChoiceId: if(HIWORD(wParam)==CBN_SELCHANGE){state.theme=static_cast<int>(SendMessageW(themeChoice,CB_GETCURSEL,0,0));save();applyTheme();}break;
         case UpdateId: updateAction(); break;
         case AutoId: state.automatic=Button_GetCheck(automaticBox)==BST_CHECKED; save(); evaluateForeground(); InvalidateRect(mainWindow,nullptr,FALSE); break;
         case TopId: state.topmost=Button_GetCheck(topmostBox)==BST_CHECKED; SetWindowPos(mainWindow,state.topmost?HWND_TOPMOST:HWND_NOTOPMOST,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE); save(); break;
@@ -631,7 +792,7 @@ LRESULT CALLBACK settingsProc(HWND window, UINT message, WPARAM wParam, LPARAM l
     }
     case WM_ERASEBKGND: { RECT rect{}; GetClientRect(window,&rect); FillRect(reinterpret_cast<HDC>(wParam),&rect,paperBrush); return 1; }
     case WM_CLOSE: DestroyWindow(window); return 0;
-    case WM_DESTROY: settingsWindow=nullptr; rulesList=nullptr; ruleInput=nullptr; return 0;
+    case WM_DESTROY: settingsWindow=nullptr; rulesList=nullptr; ruleInput=nullptr;themeChoice=nullptr; return 0;
     }
     return DefWindowProcW(window,message,wParam,lParam);
 }
@@ -639,11 +800,12 @@ LRESULT CALLBACK settingsProc(HWND window, UINT message, WPARAM wParam, LPARAM l
 void openSettings() {
     if (settingsWindow) { ShowWindow(settingsWindow,SW_SHOWNORMAL); SetForegroundWindow(settingsWindow); return; }
     RECT owner{}; GetWindowRect(mainWindow,&owner);
-    RECT rect{0,0,px(440),px(470)};
+    RECT rect{0,0,px(440),px(520)};
     AdjustWindowRectExForDpi(&rect,WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU,FALSE,WS_EX_TOOLWINDOW,dpi);
     settingsWindow=CreateWindowExW(WS_EX_TOOLWINDOW,L"FloatingTodoSettings",L"浮光待办 · 自动隐藏设置",WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU,
         owner.left-px(80),owner.top+px(16),rect.right-rect.left,rect.bottom-rect.top,mainWindow,nullptr,instance,nullptr);
     require(settingsWindow!=nullptr,L"无法打开设置。");
+    applyTheme();
     // 使用工作区约束，保证靠近屏幕边缘时仍能看到全部设置。
     HMONITOR monitor=MonitorFromWindow(mainWindow,MONITOR_DEFAULTTONEAREST); MONITORINFO info{sizeof(info)}; GetMonitorInfoW(monitor,&info);
     RECT bounds{}; GetWindowRect(settingsWindow,&bounds);
@@ -653,7 +815,9 @@ void openSettings() {
 }
 
 void command(int id) {
+    if(id>=ViewFirstId&&id<ViewFirstId+3){selectView(id-ViewFirstId);return;}
     switch(id) {
+    case ThemeId:chooseTheme();break;
     case PomoStartId: state.pomodoro.toggle(nowSeconds());save();refreshPomodoro();break;
     case PomoResetId: state.pomodoro.reset();save();refreshPomodoro();break;
     case PomoSkipId: state.pomodoro.skip();save();refreshPomodoro();break;
@@ -679,26 +843,26 @@ LRESULT CALLBACK mainProc(HWND window,UINT message,WPARAM wParam,LPARAM lParam) 
     switch(message) {
     case WM_CREATE:
         mainWindow=window;
-        tabs=child(WC_TABCONTROLW,L"功能",WS_TABSTOP,window,TabsId);
-        { TCITEMW item{}; item.mask=TCIF_TEXT; item.pszText=const_cast<wchar_t*>(L"待办"); TabCtrl_InsertItem(tabs,0,&item); item.pszText=const_cast<wchar_t*>(L"日程"); TabCtrl_InsertItem(tabs,1,&item); item.pszText=const_cast<wchar_t*>(L"专注");TabCtrl_InsertItem(tabs,2,&item); }
+        { const wchar_t* names[]={L"待办",L"日程",L"专注"};for(int i=0;i<3;++i)viewButtons[i]=child(L"BUTTON",names[i],WS_TABSTOP,window,ViewFirstId+i); }
+        themeButton=child(L"BUTTON",L"主题",WS_TABSTOP,window,ThemeId);
         settingsButton=child(L"BUTTON",L"设置",BS_OWNERDRAW|WS_TABSTOP,window,SettingsId);
         hideButton=child(L"BUTTON",L"收起",BS_OWNERDRAW|WS_TABSTOP,window,HideId);
         taskList=child(L"LISTBOX",L"待办列表",WS_TABSTOP|WS_VSCROLL|LBS_NOTIFY|LBS_NOINTEGRALHEIGHT|LBS_OWNERDRAWFIXED|LBS_HASSTRINGS,window,ListId);
-        SendMessageW(taskList,LB_SETITEMHEIGHT,0,px(32)); SetWindowSubclass(taskList,listProc,1,0);
+        SendMessageW(taskList,LB_SETITEMHEIGHT,0,px(40)); SetWindowSubclass(taskList,listProc,1,0);
         input=child(L"EDIT",L"",WS_TABSTOP|ES_AUTOHSCROLL,window,InputId);
         SendMessageW(input,EM_SETLIMITTEXT,500,0); SetWindowSubclass(input,inputProc,1,0);
         addButton=child(L"BUTTON",L"＋",WS_TABSTOP|BS_OWNERDRAW,window,AddId);
         scheduleList=child(L"LISTBOX",L"日程列表",WS_TABSTOP|WS_VSCROLL|LBS_NOTIFY|LBS_NOINTEGRALHEIGHT|LBS_OWNERDRAWFIXED|LBS_HASSTRINGS,window,ScheduleListId);
-        SendMessageW(scheduleList,LB_SETITEMHEIGHT,0,px(52)); SetWindowSubclass(scheduleList,listProc,2,0);
+        SendMessageW(scheduleList,LB_SETITEMHEIGHT,0,px(58)); SetWindowSubclass(scheduleList,listProc,2,0);
         scheduleAdd=child(L"BUTTON",L"＋ 新增日程",WS_TABSTOP,window,ScheduleAddId);
-        createPomodoro();cancelEdit(); refreshTasks(); refreshSchedules(); selectView(0); return 0;
+        createPomodoro();cancelEdit(); refreshTasks(); refreshSchedules(); selectView(0);themeWindow(mainWindow); return 0;
     case WM_SIZE: if(taskList)layout(); return 0;
     case WM_EXITSIZEMOVE: {
         RECT bounds{}; GetWindowRect(window,&bounds); state.x=bounds.left;state.y=bounds.top;
         state.width=dip(bounds.right-bounds.left);state.height=dip(bounds.bottom-bounds.top);save(); return 0;
     }
     case WM_GETMINMAXINFO: {
-        auto info=reinterpret_cast<MINMAXINFO*>(lParam);info->ptMinTrackSize={px(220),px(activeView==2?300:160)};info->ptMaxTrackSize={px(900),px(1200)};return 0;
+        auto info=reinterpret_cast<MINMAXINFO*>(lParam);info->ptMinTrackSize={px(240),px(activeView==2?320:200)};info->ptMaxTrackSize={px(900),px(1200)};return 0;
     }
     case WM_NCCALCSIZE: return 0;
     case WM_NCHITTEST: {
@@ -708,7 +872,7 @@ LRESULT CALLBACK mainProc(HWND window,UINT message,WPARAM wParam,LPARAM lParam) 
         if(y>=height-edge)return x<edge?HTBOTTOMLEFT:x>=width-edge?HTBOTTOMRIGHT:HTBOTTOM;
         if(x<edge)return HTLEFT;
         if(x>=width-edge)return HTRIGHT;
-        if(y<px(36) && x<width-px(86))return HTCAPTION;
+        if(y<px(44) && x<width-px(128))return HTCAPTION;
         return HTCLIENT;
     }
     case WM_DPICHANGED: {
@@ -717,13 +881,14 @@ LRESULT CALLBACK mainProc(HWND window,UINT message,WPARAM wParam,LPARAM lParam) 
         if(settingsWindow) {DestroyWindow(settingsWindow);openSettings();}return 0;
     }
     case WM_PAINT: paintMain(window);return 0;
+    case WM_PRINTCLIENT:drawMain(window,reinterpret_cast<HDC>(wParam));return 0;
     case WM_ERASEBKGND:return 1;
-    case WM_MEASUREITEM: { auto item=reinterpret_cast<MEASUREITEMSTRUCT*>(lParam); item->itemHeight=px(item->CtlID==ScheduleListId?52:32);return TRUE; }
+    case WM_MEASUREITEM: { auto item=reinterpret_cast<MEASUREITEMSTRUCT*>(lParam); item->itemHeight=px(item->CtlID==ScheduleListId?58:40);return TRUE; }
     case WM_DRAWITEM:drawItem(reinterpret_cast<DRAWITEMSTRUCT*>(lParam));return TRUE;
     case WM_CTLCOLORLISTBOX:SetBkColor(reinterpret_cast<HDC>(wParam),Paper);return reinterpret_cast<LRESULT>(paperBrush);
-    case WM_CTLCOLORSTATIC:SetBkColor(reinterpret_cast<HDC>(wParam),Paper);SetTextColor(reinterpret_cast<HDC>(wParam),Ink);return reinterpret_cast<LRESULT>(paperBrush);
-    case WM_CTLCOLOREDIT:SetBkColor(reinterpret_cast<HDC>(wParam),RGB(255,255,255));SetTextColor(reinterpret_cast<HDC>(wParam),Ink);return reinterpret_cast<LRESULT>(whiteBrush);
-    case WM_NOTIFY: if(reinterpret_cast<NMHDR*>(lParam)->idFrom==TabsId && reinterpret_cast<NMHDR*>(lParam)->code==TCN_SELCHANGE)selectView(TabCtrl_GetCurSel(tabs));return 0;
+    case WM_CTLCOLORSTATIC:
+    case WM_CTLCOLOREDIT:
+    case WM_CTLCOLORBTN:return controlColor(message,wParam,lParam);
     case WM_COMMAND:
         if(LOWORD(wParam)==ScheduleListId && HIWORD(wParam)==LBN_DBLCLK) {
             int selected=static_cast<int>(SendMessageW(scheduleList,LB_GETCURSEL,0,0));
@@ -732,7 +897,7 @@ LRESULT CALLBACK mainProc(HWND window,UINT message,WPARAM wParam,LPARAM lParam) 
     case WM_CONTEXTMENU:menu(window);return 0;
     case ForegroundMessage:evaluateForeground();return 0;
     case ShowRequest:manuallyHidden=false;evaluateForeground();updateTray();return 0;
-    case WM_TIMER:evaluateForeground();refreshUpdate();pomodoroTick();scheduleNotices();return 0;
+    case WM_TIMER:if(wParam==2){animateView();return 0;}evaluateForeground();refreshUpdate();pomodoroTick();scheduleNotices();return 0;
     case TrayMessage:
         if(lParam==WM_LBUTTONDBLCLK) {manuallyHidden=false;evaluateForeground();updateTray();}
         if(lParam==WM_RBUTTONUP)menu(window);
@@ -740,7 +905,7 @@ LRESULT CALLBACK mainProc(HWND window,UINT message,WPARAM wParam,LPARAM lParam) 
     case WM_QUERYENDSESSION:save();return TRUE;
     case WM_CLOSE:manuallyHidden=true;evaluateForeground();updateTray();return 0;
     case WM_DESTROY:
-        ready=false;KillTimer(window,1);if(foregroundHook)UnhookWinEvent(foregroundHook);if(desktopHook)UnhookWinEvent(desktopHook);Shell_NotifyIconW(NIM_DELETE,&tray);PostQuitMessage(0);return 0;
+        ready=false;KillTimer(window,1);KillTimer(window,2);if(foregroundHook)UnhookWinEvent(foregroundHook);if(desktopHook)UnhookWinEvent(desktopHook);Shell_NotifyIconW(NIM_DELETE,&tray);PostQuitMessage(0);return 0;
     }
     return DefWindowProcW(window,message,wParam,lParam);
 }
@@ -775,7 +940,7 @@ int WINAPI wWinMain(HINSTANCE app,HINSTANCE,LPWSTR,int) {
     dataFile=std::filesystem::path(local)/L"DesktopList"/L"state.json";CoTaskMemFree(local);
     state.load(dataFile);
     dpi=static_cast<int>(GetDpiForSystem());
-    paperBrush=CreateSolidBrush(Paper);whiteBrush=CreateSolidBrush(RGB(255,255,255));fonts();appIcon=createIcon();
+    colors=themePalette(state.theme);paperBrush=CreateSolidBrush(Paper);whiteBrush=CreateSolidBrush(Surface);fonts();appIcon=createIcon();
     INITCOMMONCONTROLSEX controls{sizeof(controls),ICC_LISTVIEW_CLASSES|ICC_STANDARD_CLASSES|ICC_DATE_CLASSES|ICC_TAB_CLASSES};require(InitCommonControlsEx(&controls)!=FALSE,L"无法初始化界面。");
     WNDCLASSEXW klass{sizeof(klass)};klass.lpfnWndProc=mainProc;klass.hInstance=instance;klass.hCursor=LoadCursorW(nullptr,IDC_ARROW);klass.hIcon=appIcon;klass.hIconSm=appIcon;klass.lpszClassName=L"FloatingTodoMain";
     require(RegisterClassExW(&klass)!=0,L"无法注册待办窗口。");
@@ -803,7 +968,7 @@ int WINAPI wWinMain(HINSTANCE app,HINSTANCE,LPWSTR,int) {
     ready=true;evaluateForeground();
     MSG message{};BOOL result;
     while((result=GetMessageW(&message,nullptr,0,0))>0) {
-        if(message.message==WM_KEYDOWN && message.wParam=='N' && (GetKeyState(VK_CONTROL)&0x8000) && (message.hwnd==mainWindow || IsChild(mainWindow,message.hwnd)) && (!settingsWindow || !IsChild(settingsWindow,message.hwnd))) {TabCtrl_SetCurSel(tabs,0);selectView(0);SetFocus(input);continue;}
+        if(message.message==WM_KEYDOWN && message.wParam=='N' && (GetKeyState(VK_CONTROL)&0x8000) && (message.hwnd==mainWindow || IsChild(mainWindow,message.hwnd)) && (!settingsWindow || !IsChild(settingsWindow,message.hwnd))) {selectView(0);SetFocus(input);continue;}
         if(scheduleWindow && IsDialogMessageW(scheduleWindow,&message))continue;
         if(settingsWindow && IsDialogMessageW(settingsWindow,&message))continue;
         if(IsDialogMessageW(mainWindow,&message))continue;
@@ -811,6 +976,6 @@ int WINAPI wWinMain(HINSTANCE app,HINSTANCE,LPWSTR,int) {
     }
     require(result!=-1,L"窗口消息处理失败。");
     stopUpdater();
-    for(auto font:{bodyFont,smallFont,rowFont,doneFont,clockFont})DeleteObject(font);
+    for(auto font:{bodyFont,smallFont,rowFont,doneFont,clockFont,titleFont})DeleteObject(font);
     DeleteObject(paperBrush);DeleteObject(whiteBrush);DestroyIcon(appIcon);shutdownVirtualDesktops();CloseHandle(mutex);return 0;
 }
