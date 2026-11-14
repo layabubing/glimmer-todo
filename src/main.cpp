@@ -18,6 +18,7 @@ constexpr int AddId = 101, InputId = 102, ListId = 103, SettingsId = 104, HideId
 constexpr int AutoId = 201, TopId = 202, RulesId = 203, RuleInputId = 204, RuleAddId = 205, BrowseId = 206, RemoveId = 207;
 constexpr int UpdateId = 208;
 constexpr int TabsId = 110, ScheduleListId = 111, ScheduleAddId = 112, ScheduleSaveId = 113;
+constexpr int PomoStartId = 120, PomoResetId = 121, PomoSkipId = 122, PomoConfigId = 123;
 constexpr int MenuShow = 301, MenuAuto = 302, MenuTop = 303, MenuSettings = 304, MenuExit = 305, MenuClear = 306;
 HINSTANCE instance;
 HWND mainWindow, taskList, input, addButton, settingsButton, hideButton;
@@ -28,7 +29,9 @@ HWND tabs, scheduleList, scheduleAdd, scheduleWindow, scheduleText, scheduleDate
 int activeView = 0;
 uint64_t scheduleEditingId = 0;
 ULONGLONG nextNotice = 0;
-HFONT bodyFont, smallFont, rowFont, doneFont;
+HWND pomoPhase, pomoClock, pomoCount, pomoStart, pomoReset, pomoSkip, pomoFocus, pomoShort, pomoLong, pomoConfig;
+std::vector<HWND> pomoControls;
+HFONT bodyFont, smallFont, rowFont, doneFont, clockFont;
 HBRUSH paperBrush, whiteBrush;
 HICON appIcon;
 HWINEVENTHOOK foregroundHook;
@@ -60,11 +63,14 @@ HFONT makeFont(int height, int weight = FW_NORMAL, bool strike = false) {
 }
 
 void fonts() {
-    for (auto font : {bodyFont, smallFont, rowFont, doneFont}) if (font) DeleteObject(font);
+    for (auto font : {bodyFont, smallFont, rowFont, doneFont, clockFont}) if (font) DeleteObject(font);
     bodyFont = makeFont(12); smallFont = makeFont(10);
     rowFont = makeFont(12); doneFont = makeFont(12, FW_NORMAL, true);
+    clockFont = makeFont(32,FW_SEMIBOLD);
     for (auto window : {input, addButton, settingsButton, hideButton}) if (window) SendMessageW(window, WM_SETFONT, reinterpret_cast<WPARAM>(bodyFont), TRUE);
     if (taskList) { SendMessageW(taskList, WM_SETFONT, reinterpret_cast<WPARAM>(rowFont), TRUE); SendMessageW(taskList, LB_SETITEMHEIGHT, 0, px(32)); }
+    if (scheduleList) SendMessageW(scheduleList,LB_SETITEMHEIGHT,0,px(52));
+    for(auto window:pomoControls)SendMessageW(window,WM_SETFONT,reinterpret_cast<WPARAM>(window==pomoClock?clockFont:bodyFont),TRUE);
 }
 
 void fill(HDC dc, RECT rect, COLORREF color) {
@@ -101,6 +107,7 @@ void updateTray();
 void evaluateForeground();
 void openSchedule(uint64_t id = 0);
 void layout();
+void refreshPomodoro();
 
 void notify(const std::wstring& title, const std::wstring& message) {
     NOTIFYICONDATAW info = tray; info.uFlags = NIF_INFO;
@@ -134,6 +141,12 @@ void selectView(int view) {
     activeView = view;
     for (auto window : {taskList, input, addButton}) ShowWindow(window, view == 0 ? SW_SHOWNA : SW_HIDE);
     for (auto window : {scheduleList, scheduleAdd}) ShowWindow(window, view == 1 ? SW_SHOWNA : SW_HIDE);
+    for(auto window:pomoControls)ShowWindow(window,view==2?SW_SHOWNA:SW_HIDE);
+    if(view==2) {
+        RECT bounds{};GetWindowRect(mainWindow,&bounds);
+        if(bounds.bottom-bounds.top<px(300))SetWindowPos(mainWindow,nullptr,0,0,bounds.right-bounds.left,px(300),SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);
+        refreshPomodoro();
+    }
     layout();
 }
 
@@ -256,6 +269,47 @@ HWND child(const wchar_t* type, const wchar_t* text, DWORD style, HWND parent, i
     return window;
 }
 
+void refreshPomodoro() {
+    auto& p=state.pomodoro;
+    auto seconds=p.secondsLeft(nowSeconds()); wchar_t clock[32]; swprintf_s(clock,L"%02d:%02d",seconds/60,seconds%60);
+    if(textOf(pomoClock)!=clock)SetWindowTextW(pomoClock,clock);
+    const wchar_t* phase=p.phase==0?L"专注":p.phase==1?L"短休息":L"长休息";
+    SetWindowTextW(pomoPhase,phase);
+    auto count=L"今日完成 "+std::to_wstring(p.todayCount)+L"  ·  本轮 "+std::to_wstring(p.cycle)+L"/4";
+    SetWindowTextW(pomoCount,count.c_str());
+    SetWindowTextW(pomoStart,p.running?L"暂停":L"开始");
+    for(auto edit:{pomoFocus,pomoShort,pomoLong,pomoConfig})EnableWindow(edit,!p.running);
+}
+
+void pomodoroTick() {
+    if(state.pomodoro.tick(nowSeconds()))save();
+    if(activeView==2)refreshPomodoro();
+    if(state.pomodoro.noticePending && !automaticallyHidden && GetTickCount64()>=nextNotice) {
+        notify(L"番茄钟",state.pomodoro.phase==0?L"休息结束，可以开始下一轮专注。":L"专注结束，请休息。点击专注页面的开始按钮计时。");
+        state.pomodoro.noticePending=false;save();
+    }
+}
+
+void createPomodoro() {
+    auto control=[&](const wchar_t* type,const wchar_t* text,DWORD style,int id,int x,int y,int width,int height) {
+        HWND window=child(type,text,style,mainWindow,id);MoveWindow(window,px(x),px(y),px(width),px(height),TRUE);pomoControls.push_back(window);return window;
+    };
+    pomoPhase=control(L"STATIC",L"专注",SS_CENTER,-1,8,76,244,22);
+    pomoClock=control(L"STATIC",L"25:00",SS_CENTER,-1,8,100,244,45);SendMessageW(pomoClock,WM_SETFONT,reinterpret_cast<WPARAM>(clockFont),TRUE);
+    pomoCount=control(L"STATIC",L"",SS_CENTER,-1,8,150,244,22);
+    pomoStart=control(L"BUTTON",L"开始",WS_TABSTOP,PomoStartId,8,178,76,28);
+    pomoReset=control(L"BUTTON",L"重置",WS_TABSTOP,PomoResetId,92,178,76,28);
+    pomoSkip=control(L"BUTTON",L"跳过",WS_TABSTOP,PomoSkipId,176,178,76,28);
+    control(L"STATIC",L"专注 / 分钟",SS_CENTER,-1,8,216,76,18);
+    control(L"STATIC",L"短休 / 分钟",SS_CENTER,-1,92,216,76,18);
+    control(L"STATIC",L"长休 / 分钟",SS_CENTER,-1,176,216,76,18);
+    pomoFocus=control(L"EDIT",std::to_wstring(state.pomodoro.focusMinutes).c_str(),WS_TABSTOP|WS_BORDER|ES_NUMBER|ES_CENTER,410,8,238,76,24);
+    pomoShort=control(L"EDIT",std::to_wstring(state.pomodoro.shortMinutes).c_str(),WS_TABSTOP|WS_BORDER|ES_NUMBER|ES_CENTER,411,92,238,76,24);
+    pomoLong=control(L"EDIT",std::to_wstring(state.pomodoro.longMinutes).c_str(),WS_TABSTOP|WS_BORDER|ES_NUMBER|ES_CENTER,412,176,238,76,24);
+    for(auto edit:{pomoFocus,pomoShort,pomoLong})SendMessageW(edit,EM_SETLIMITTEXT,3,0);
+    pomoConfig=control(L"BUTTON",L"保存时长",WS_TABSTOP,PomoConfigId,8,270,244,24);
+}
+
 LRESULT CALLBACK scheduleProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
     if (message == WM_CREATE) {
         scheduleWindow = window;
@@ -316,6 +370,15 @@ void layout() {
     MoveWindow(scheduleAdd, px(8), height - px(39), width - px(16), px(30), TRUE);
     MoveWindow(input, px(16), height - px(33), width - px(66), px(20), TRUE);
     MoveWindow(addButton, width - px(43), height - px(36), px(28), px(26), TRUE);
+    if(pomoClock) {
+        const int positions[]={76,100,150,178,178,178,216,216,216,238,238,238,270};
+        const int heights[]={22,45,22,28,28,28,18,18,18,24,24,24,24};
+        int column=(width-px(32))/3;
+        for(size_t index=0;index<pomoControls.size();++index) {
+            if(index==0||index==1||index==2||index==12)MoveWindow(pomoControls[index],px(8),px(positions[index]),width-px(16),px(heights[index]),TRUE);
+            else {int c=index>=9?static_cast<int>(index)-9:index>=6?static_cast<int>(index)-6:static_cast<int>(index)-3;MoveWindow(pomoControls[index],px(8)+c*(column+px(8)),px(positions[index]),column,px(heights[index]),TRUE);}
+        }
+    }
     InvalidateRect(mainWindow, nullptr, TRUE);
 }
 
@@ -591,6 +654,15 @@ void openSettings() {
 
 void command(int id) {
     switch(id) {
+    case PomoStartId: state.pomodoro.toggle(nowSeconds());save();refreshPomodoro();break;
+    case PomoResetId: state.pomodoro.reset();save();refreshPomodoro();break;
+    case PomoSkipId: state.pomodoro.skip();save();refreshPomodoro();break;
+    case PomoConfigId: {
+        BOOL focusValid=FALSE,shortValid=FALSE,longValid=FALSE;
+        int focus=GetDlgItemInt(mainWindow,410,&focusValid,FALSE),shortBreak=GetDlgItemInt(mainWindow,411,&shortValid,FALSE),longBreak=GetDlgItemInt(mainWindow,412,&longValid,FALSE);
+        if(!focusValid||!shortValid||!longValid||!state.pomodoro.configure(focus,shortBreak,longBreak))MessageBoxW(mainWindow,L"专注时间为 1–180 分钟，短休息为 1–60 分钟，长休息为 1–120 分钟。",L"番茄钟",MB_OK|MB_ICONINFORMATION);
+        else {save();refreshPomodoro();}break;
+    }
     case ScheduleAddId: openSchedule(); break;
     case AddId: submitTask(); break;
     case SettingsId: case MenuSettings: openSettings(); break;
@@ -608,7 +680,7 @@ LRESULT CALLBACK mainProc(HWND window,UINT message,WPARAM wParam,LPARAM lParam) 
     case WM_CREATE:
         mainWindow=window;
         tabs=child(WC_TABCONTROLW,L"功能",WS_TABSTOP,window,TabsId);
-        { TCITEMW item{}; item.mask=TCIF_TEXT; item.pszText=const_cast<wchar_t*>(L"待办"); TabCtrl_InsertItem(tabs,0,&item); item.pszText=const_cast<wchar_t*>(L"日程"); TabCtrl_InsertItem(tabs,1,&item); }
+        { TCITEMW item{}; item.mask=TCIF_TEXT; item.pszText=const_cast<wchar_t*>(L"待办"); TabCtrl_InsertItem(tabs,0,&item); item.pszText=const_cast<wchar_t*>(L"日程"); TabCtrl_InsertItem(tabs,1,&item); item.pszText=const_cast<wchar_t*>(L"专注");TabCtrl_InsertItem(tabs,2,&item); }
         settingsButton=child(L"BUTTON",L"设置",BS_OWNERDRAW|WS_TABSTOP,window,SettingsId);
         hideButton=child(L"BUTTON",L"收起",BS_OWNERDRAW|WS_TABSTOP,window,HideId);
         taskList=child(L"LISTBOX",L"待办列表",WS_TABSTOP|WS_VSCROLL|LBS_NOTIFY|LBS_NOINTEGRALHEIGHT|LBS_OWNERDRAWFIXED|LBS_HASSTRINGS,window,ListId);
@@ -619,14 +691,14 @@ LRESULT CALLBACK mainProc(HWND window,UINT message,WPARAM wParam,LPARAM lParam) 
         scheduleList=child(L"LISTBOX",L"日程列表",WS_TABSTOP|WS_VSCROLL|LBS_NOTIFY|LBS_NOINTEGRALHEIGHT|LBS_OWNERDRAWFIXED|LBS_HASSTRINGS,window,ScheduleListId);
         SendMessageW(scheduleList,LB_SETITEMHEIGHT,0,px(52)); SetWindowSubclass(scheduleList,listProc,2,0);
         scheduleAdd=child(L"BUTTON",L"＋ 新增日程",WS_TABSTOP,window,ScheduleAddId);
-        cancelEdit(); refreshTasks(); refreshSchedules(); selectView(0); return 0;
+        createPomodoro();cancelEdit(); refreshTasks(); refreshSchedules(); selectView(0); return 0;
     case WM_SIZE: if(taskList)layout(); return 0;
     case WM_EXITSIZEMOVE: {
         RECT bounds{}; GetWindowRect(window,&bounds); state.x=bounds.left;state.y=bounds.top;
         state.width=dip(bounds.right-bounds.left);state.height=dip(bounds.bottom-bounds.top);save(); return 0;
     }
     case WM_GETMINMAXINFO: {
-        auto info=reinterpret_cast<MINMAXINFO*>(lParam);info->ptMinTrackSize={px(220),px(160)};info->ptMaxTrackSize={px(900),px(1200)};return 0;
+        auto info=reinterpret_cast<MINMAXINFO*>(lParam);info->ptMinTrackSize={px(220),px(activeView==2?300:160)};info->ptMaxTrackSize={px(900),px(1200)};return 0;
     }
     case WM_NCCALCSIZE: return 0;
     case WM_NCHITTEST: {
@@ -649,6 +721,7 @@ LRESULT CALLBACK mainProc(HWND window,UINT message,WPARAM wParam,LPARAM lParam) 
     case WM_MEASUREITEM: { auto item=reinterpret_cast<MEASUREITEMSTRUCT*>(lParam); item->itemHeight=px(item->CtlID==ScheduleListId?52:32);return TRUE; }
     case WM_DRAWITEM:drawItem(reinterpret_cast<DRAWITEMSTRUCT*>(lParam));return TRUE;
     case WM_CTLCOLORLISTBOX:SetBkColor(reinterpret_cast<HDC>(wParam),Paper);return reinterpret_cast<LRESULT>(paperBrush);
+    case WM_CTLCOLORSTATIC:SetBkColor(reinterpret_cast<HDC>(wParam),Paper);SetTextColor(reinterpret_cast<HDC>(wParam),Ink);return reinterpret_cast<LRESULT>(paperBrush);
     case WM_CTLCOLOREDIT:SetBkColor(reinterpret_cast<HDC>(wParam),RGB(255,255,255));SetTextColor(reinterpret_cast<HDC>(wParam),Ink);return reinterpret_cast<LRESULT>(whiteBrush);
     case WM_NOTIFY: if(reinterpret_cast<NMHDR*>(lParam)->idFrom==TabsId && reinterpret_cast<NMHDR*>(lParam)->code==TCN_SELCHANGE)selectView(TabCtrl_GetCurSel(tabs));return 0;
     case WM_COMMAND:
@@ -659,7 +732,7 @@ LRESULT CALLBACK mainProc(HWND window,UINT message,WPARAM wParam,LPARAM lParam) 
     case WM_CONTEXTMENU:menu(window);return 0;
     case ForegroundMessage:evaluateForeground();return 0;
     case ShowRequest:manuallyHidden=false;evaluateForeground();updateTray();return 0;
-    case WM_TIMER:evaluateForeground();refreshUpdate();scheduleNotices();return 0;
+    case WM_TIMER:evaluateForeground();refreshUpdate();pomodoroTick();scheduleNotices();return 0;
     case TrayMessage:
         if(lParam==WM_LBUTTONDBLCLK) {manuallyHidden=false;evaluateForeground();updateTray();}
         if(lParam==WM_RBUTTONUP)menu(window);
@@ -738,6 +811,6 @@ int WINAPI wWinMain(HINSTANCE app,HINSTANCE,LPWSTR,int) {
     }
     require(result!=-1,L"窗口消息处理失败。");
     stopUpdater();
-    for(auto font:{bodyFont,smallFont,rowFont,doneFont})DeleteObject(font);
+    for(auto font:{bodyFont,smallFont,rowFont,doneFont,clockFont})DeleteObject(font);
     DeleteObject(paperBrush);DeleteObject(whiteBrush);DestroyIcon(appIcon);shutdownVirtualDesktops();CloseHandle(mutex);return 0;
 }

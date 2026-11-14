@@ -32,10 +32,27 @@ SYSTEMTIME localTime(int64_t timestamp);
 int64_t timestampFromLocal(const SYSTEMTIME& local);
 std::wstring formatDate(int64_t timestamp);
 
+struct Pomodoro {
+    int focusMinutes = 25, shortMinutes = 5, longMinutes = 15;
+    int phase = 0, cycle = 0, todayCount = 0, date = 0;
+    int remaining = 25 * 60;
+    int64_t deadline = 0;
+    bool running = false, noticePending = false;
+
+    int duration() const;
+    int secondsLeft(int64_t now) const;
+    bool tick(int64_t now);
+    void toggle(int64_t now);
+    void reset();
+    void skip();
+    bool configure(int focus, int shortBreak, int longBreak);
+};
+
 struct State {
     std::vector<Task> tasks;
     std::vector<Rule> rules;
     std::vector<Schedule> schedules;
+    Pomodoro pomodoro;
     bool automatic = true;
     bool topmost = true;
     int x = -1, y = -1, width = 260, height = 300;

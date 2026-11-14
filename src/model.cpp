@@ -29,6 +29,33 @@ std::wstring formatDate(int64_t timestamp) {
     return result;
 }
 
+int Pomodoro::duration() const { return (phase == 0 ? focusMinutes : phase == 1 ? shortMinutes : longMinutes) * 60; }
+int Pomodoro::secondsLeft(int64_t now) const { return running ? static_cast<int>(std::clamp<int64_t>(deadline - now, 0, 180 * 60)) : remaining; }
+
+bool Pomodoro::tick(int64_t now) {
+    auto local = localTime(now); int today = local.wYear * 10000 + local.wMonth * 100 + local.wDay;
+    bool changed = false;
+    if (date != today) { date = today; todayCount = 0; changed = true; }
+    if (!running || now < deadline) return changed;
+    if (phase == 0) {
+        ++todayCount; cycle = (cycle + 1) % 4; phase = cycle == 0 ? 2 : 1;
+    } else phase = 0;
+    remaining = duration(); running = false; deadline = 0; noticePending = true;
+    return true;
+}
+
+void Pomodoro::toggle(int64_t now) {
+    tick(now);
+    if (running) { remaining = secondsLeft(now); running = false; deadline = 0; }
+    else { deadline = now + remaining; running = true; noticePending = false; }
+}
+void Pomodoro::reset() { phase = 0; cycle = 0; running = false; deadline = 0; remaining = duration(); noticePending = false; }
+void Pomodoro::skip() { phase = phase == 0 ? 1 : 0; running = false; deadline = 0; remaining = duration(); noticePending = false; }
+bool Pomodoro::configure(int focus, int shortBreak, int longBreak) {
+    if (running || focus < 1 || focus > 180 || shortBreak < 1 || shortBreak > 60 || longBreak < 1 || longBreak > 120) return false;
+    focusMinutes = focus; shortMinutes = shortBreak; longMinutes = longBreak; remaining = duration(); return true;
+}
+
 bool State::putSchedule(uint64_t id, const std::wstring& value, int64_t due, int repeat) {
     auto text = trim(value);
     if (text.empty() || text.size() > 500 || due <= 0 || due > 253402214400LL || repeat < 0 || repeat > 2) return false;
@@ -178,6 +205,14 @@ void State::load(const std::filesystem::path& file) {
         nextId = (std::max)(nextId, event.id + 1); schedules.push_back(std::move(event));
     }
     std::stable_sort(schedules.begin(), schedules.end(), [](const Schedule& a, const Schedule& b) { return a.due < b.due; });
+    if (root.contains("pomodoro")) {
+        const auto& p = root.at("pomodoro");
+        pomodoro = Pomodoro{};
+        require(pomodoro.configure(p.at("focusMinutes").get<int>(),p.at("shortMinutes").get<int>(),p.at("longMinutes").get<int>()),L"番茄钟时长无效。");
+        pomodoro.phase=p.at("phase").get<int>(); pomodoro.cycle=p.at("cycle").get<int>(); pomodoro.todayCount=p.at("todayCount").get<int>(); pomodoro.date=p.at("date").get<int>();
+        pomodoro.remaining=p.at("remaining").get<int>(); pomodoro.deadline=p.at("deadline").get<int64_t>(); pomodoro.running=p.at("running").get<bool>(); pomodoro.noticePending=p.at("noticePending").get<bool>();
+        require(pomodoro.phase>=0 && pomodoro.phase<=2 && pomodoro.cycle>=0 && pomodoro.cycle<4 && pomodoro.todayCount>=0 && pomodoro.remaining>=0 && pomodoro.remaining<=10800 && (!pomodoro.running || pomodoro.deadline>0),L"番茄钟状态无效。");
+    }
     automatic = root.at("automatic").get<bool>();
     topmost = root.at("topmost").get<bool>();
     const auto& bounds = root.at("window");
@@ -197,6 +232,8 @@ void State::save(const std::filesystem::path& file) const {
     for (const auto& task : tasks) root["tasks"].push_back({{"id", task.id}, {"text", utf8(task.text)}, {"done", task.done}});
     for (const auto& rule : rules) root["rules"].push_back({{"label", utf8(rule.label)}, {"exe", utf8(rule.exe)}, {"enabled", rule.enabled}});
     for (const auto& event : schedules) root["schedules"].push_back({{"id", event.id}, {"text", utf8(event.text)}, {"due", event.due}, {"repeat", event.repeat}, {"done", event.done}, {"notified", event.notified}});
+    const auto& p = pomodoro;
+    root["pomodoro"]={{"focusMinutes",p.focusMinutes},{"shortMinutes",p.shortMinutes},{"longMinutes",p.longMinutes},{"phase",p.phase},{"cycle",p.cycle},{"todayCount",p.todayCount},{"date",p.date},{"remaining",p.remaining},{"deadline",p.deadline},{"running",p.running},{"noticePending",p.noticePending}};
     std::filesystem::create_directories(file.parent_path());
     auto pending = file;
     pending += L".pending";
