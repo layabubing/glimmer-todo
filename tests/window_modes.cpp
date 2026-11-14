@@ -34,6 +34,7 @@ int main() {
     klass.lpfnWndProc=compactProc;klass.lpszClassName=L"FloatingTodoCompact";klass.style=CS_DBLCLKS;check(RegisterClassExW(&klass),"register compact window");
     check(CreateWindowExW(WS_EX_APPWINDOW,L"FloatingTodoMain",L"浮光待办",WS_POPUP|WS_CAPTION|WS_SYSMENU|WS_THICKFRAME|WS_CLIPCHILDREN,40,40,px(260),px(320),nullptr,nullptr,instance,nullptr),"create main window");
     check(CreateWindowExW(WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE,L"FloatingTodoCompact",L"浮光待办",WS_POPUP|WS_CLIPCHILDREN,40,40,cp(304),cp(66),nullptr,nullptr,instance,nullptr),"create compact window");
+    initializeTaskbarPanel(instance,mainWindow,state,ShowRequest,TaskbarMenuRequest);
     ready=true;applyVisibility();pump();RECT normal{};GetWindowRect(mainWindow,&normal);
     check(IsWindowVisible(mainWindow) && !IsIconic(mainWindow) && !IsWindowVisible(compactWindow),"expanded visibility");
     state.addTask(L"完成日程安排");state.putSchedule(0,L"专注时间",nowSeconds()+3600,0);state.pomodoro.toggle(nowSeconds());
@@ -41,8 +42,8 @@ int main() {
         command(CollapseFirstId+mode);pump();
         bool floating=mode<2;
         check(manuallyHidden && IsWindowVisible(compactWindow)==floating,"selected compact visibility");
-        check(IsWindowVisible(mainWindow)==(mode==3),"taskbar is the only visible main window while collapsed");
-        if(mode==3)check(IsIconic(mainWindow) && textOf(mainWindow).find(L"待办 0/1")!=std::wstring::npos && textOf(mainWindow).find(L"专注时间")!=std::wstring::npos,"taskbar minimized state and information");
+        check(!IsWindowVisible(mainWindow),"main window hidden in every collapse mode");
+        if(mode==3)check(!taskbarSlot().host && !taskbarPanelWindow(),"isolated desktop has no Explorer taskbar");
         if(floating) {
             check((GetWindowLongPtrW(compactWindow,GWL_EXSTYLE)&WS_EX_TOOLWINDOW)!=0 && GetWindow(compactWindow,GW_OWNER)==nullptr,"independent compact tool window");
             RECT rect{};GetWindowRect(compactWindow,&rect);MONITORINFO info{sizeof(info)};GetMonitorInfoW(MonitorFromWindow(compactWindow,MONITOR_DEFAULTTONEAREST),&info);
@@ -53,16 +54,16 @@ int main() {
         automaticallyHidden=true;applyVisibility();pump();
         check(!IsWindowVisible(mainWindow) && !IsWindowVisible(compactWindow),"automatic hiding overrides every collapse mode");
         automaticallyHidden=false;applyVisibility();pump();
-        check(manuallyHidden && IsWindowVisible(compactWindow)==floating && IsWindowVisible(mainWindow)==(mode==3),"restore selected mode after automatic hiding");
+        check(manuallyHidden && IsWindowVisible(compactWindow)==floating && !IsWindowVisible(mainWindow),"restore selected mode after automatic hiding");
         SendMessageW(mainWindow,ShowRequest,0,0);pump();
         check(!manuallyHidden && IsWindowVisible(mainWindow) && !IsIconic(mainWindow) && !IsWindowVisible(compactWindow),"expand every mode");
         RECT restored{};GetWindowRect(mainWindow,&restored);
         check(EqualRect(&normal,&restored),"expanded bounds survive mode changes");
     }
     command(CollapseFirstId+3);SendMessageW(mainWindow,WM_SYSCOMMAND,SC_RESTORE,0);pump();
-    check(!manuallyHidden && !IsIconic(mainWindow),"taskbar click restore");
+    check(!manuallyHidden && !IsIconic(mainWindow),"system restore expands main window");
     SendMessageW(mainWindow,WM_SYSCOMMAND,SC_MINIMIZE,0);pump();
-    check(manuallyHidden && IsIconic(mainWindow),"system minimize uses selected mode");
+    check(manuallyHidden && !IsWindowVisible(mainWindow),"system minimize uses selected mode");
     openSettings();pump();
     check(!manuallyHidden && IsWindowVisible(settingsWindow) && SendMessageW(collapseChoice,CB_GETCOUNT,0,0)==4,"settings restores expanded window and lists four modes");
     DestroyWindow(settingsWindow);

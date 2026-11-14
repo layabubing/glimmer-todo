@@ -183,6 +183,14 @@ CompactInfo State::compactInfo(int64_t now) const {
     const Schedule* next = nullptr;
     for (const auto& event : schedules) if (!event.done && (!next || event.due < next->due)) next = &event;
     info.schedule = next ? (next->due <= now ? L"已到期 · " : L"日程 · ") + formatDate(next->due) + L" " + next->text : L"暂无日程";
+    info.scheduleShort=L"暂无日程";
+    if(next) {
+        auto date=localTime(next->due),today=localTime(now);wchar_t time[32]{};
+        bool sameDay=date.wYear==today.wYear && date.wMonth==today.wMonth && date.wDay==today.wDay;
+        if(sameDay)swprintf_s(time,L"%02u:%02u",date.wHour,date.wMinute);
+        else swprintf_s(time,L"%02u/%02u %02u:%02u",date.wMonth,date.wDay,date.wHour,date.wMinute);
+        info.scheduleShort=(next->due<=now?L"到期 ":L"")+std::wstring(time)+L" "+next->text;
+    }
     int seconds = pomodoro.secondsLeft(now);
     wchar_t clock[24]{};
     swprintf_s(clock, L"%02d:%02d", seconds / 60, seconds % 60);

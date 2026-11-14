@@ -87,6 +87,7 @@ int main() {
     check(compact.compactInfo(now).tasks==L"待办 1/2" && compact.compactInfo(now).schedule.find(L"已到期")!=std::wstring::npos,"compact completion and overdue event");
     compact.completeSchedule(past,now);
     check(compact.compactInfo(now).schedule.find(L"将来的日程")!=std::wstring::npos,"compact skips completed schedule");
+    check(compact.compactInfo(now).scheduleShort.find(L"将来的日程")!=std::wstring::npos && compact.compactInfo(now).scheduleShort.size()<compact.compactInfo(now).schedule.size(),"short taskbar schedule keeps event text");
     compact.pomodoro.toggle(now);
     check(compact.compactInfo(now+61).timer==L"专注 23:59" && compact.compactInfo(now+61).details.find(L"进行中")!=std::wstring::npos,"compact live countdown");
     compact.pomodoro.toggle(now+61);

@@ -3,6 +3,7 @@
 #include "updater.hpp"
 #include "version.hpp"
 #include "theme.hpp"
+#include "taskbar_panel.hpp"
 #include <windowsx.h>
 #include <commctrl.h>
 #include <commdlg.h>
@@ -18,6 +19,7 @@ COLORREF &Paper=colors.background, &Surface=colors.surface, &Ink=colors.text, &M
 COLORREF &Green=colors.accent, &Soft=colors.selected, &Border=colors.border, &Track=colors.track, &OnAccent=colors.onAccent;
 constexpr UINT TrayMessage = WM_APP + 1, ForegroundMessage = WM_APP + 2;
 constexpr UINT ShowRequest = WM_APP + 3;
+constexpr UINT TaskbarMenuRequest = WM_APP + 4;
 constexpr int AddId = 101, InputId = 102, ListId = 103, SettingsId = 104, HideId = 105;
 constexpr int AutoId = 201, TopId = 202, RulesId = 203, RuleInputId = 204, RuleAddId = 205, BrowseId = 206, RemoveId = 207;
 constexpr int UpdateId = 208, ThemeId = 209, ThemeChoiceId = 210;
@@ -712,8 +714,6 @@ void refreshCompact() {
         TOOLINFOW tool{sizeof(tool)};tool.uFlags=TTF_IDISHWND|TTF_SUBCLASS;tool.hwnd=compactWindow;tool.uId=reinterpret_cast<UINT_PTR>(compactWindow);tool.lpszText=compactDetails.data();
         SendMessageW(compactTooltip,TTM_UPDATETIPTEXTW,0,reinterpret_cast<LPARAM>(&tool));InvalidateRect(compactWindow,nullptr,FALSE);
     }
-    auto title=manuallyHidden && state.collapseMode==CollapseMode::Taskbar?L"浮光 · "+info.tasks+L" · "+info.timer+L" · "+info.schedule:L"浮光待办";
-    if(textOf(mainWindow)!=title)SetWindowTextW(mainWindow,title.c_str());
     updateTray();
 }
 
@@ -724,9 +724,7 @@ void applyVisibility() {
     bool taskbar=manuallyHidden && !automaticallyHidden && state.collapseMode==CollapseMode::Taskbar;
     if(automaticallyHidden || manuallyHidden) {
         for(auto window:{fileDialog,settingsWindow,scheduleWindow})if(window && IsWindowVisible(window))ShowWindow(window,SW_HIDE);
-        if(taskbar) {
-            if(followCurrentDesktop({mainWindow}) && (!IsWindowVisible(mainWindow) || !IsIconic(mainWindow)))ShowWindow(mainWindow,SW_SHOWMINNOACTIVE);
-        } else if(IsWindowVisible(mainWindow))ShowWindow(mainWindow,SW_HIDE);
+        if(IsWindowVisible(mainWindow))ShowWindow(mainWindow,SW_HIDE);
     } else if(followCurrentDesktop({mainWindow,settingsWindow,fileDialog,scheduleWindow})) {
         if(!IsWindowVisible(mainWindow) || IsIconic(mainWindow))ShowWindow(mainWindow,SW_SHOWNOACTIVATE);
         for(auto window:{settingsWindow,fileDialog,scheduleWindow})if(window && !IsWindowVisible(window))ShowWindow(window,SW_SHOWNOACTIVATE);
@@ -737,7 +735,7 @@ void applyVisibility() {
     } else if(compactWindow && IsWindowVisible(compactWindow)) {
         SendMessageW(compactTooltip,TTM_POP,0,0);ShowWindow(compactWindow,SW_HIDE);
     }
-    refreshCompact();applyingVisibility=false;
+    syncTaskbarPanel(taskbar);refreshCompact();applyingVisibility=false;
 }
 
 void evaluateForeground() {
@@ -1009,7 +1007,6 @@ LRESULT CALLBACK mainProc(HWND window,UINT message,WPARAM wParam,LPARAM lParam) 
         createPomodoro();cancelEdit(); refreshTasks(); refreshSchedules(); selectView(0);themeWindow(mainWindow); return 0;
     case WM_SIZE:
         if(wParam!=SIZE_MINIMIZED && taskList) {
-            if(!applyingVisibility && manuallyHidden && state.collapseMode==CollapseMode::Taskbar){manuallyHidden=false;applyVisibility();}
             layout();
         }
         return 0;
@@ -1061,6 +1058,7 @@ LRESULT CALLBACK mainProc(HWND window,UINT message,WPARAM wParam,LPARAM lParam) 
         }
         return 0;
     case WM_CONTEXTMENU:menu(window);return 0;
+    case TaskbarMenuRequest:if(taskbarPanelWindow())menu(taskbarPanelWindow());return 0;
     case WM_DISPLAYCHANGE:case WM_SETTINGCHANGE:positionCompact();return 0;
     case ForegroundMessage:evaluateForeground();return 0;
     case ShowRequest:manuallyHidden=false;evaluateForeground();updateTray();return 0;
@@ -1072,6 +1070,7 @@ LRESULT CALLBACK mainProc(HWND window,UINT message,WPARAM wParam,LPARAM lParam) 
     case WM_QUERYENDSESSION:save();return TRUE;
     case WM_CLOSE:manuallyHidden=true;evaluateForeground();updateTray();return 0;
     case WM_DESTROY:
+        destroyTaskbarPanel();
         if(compactWindow)DestroyWindow(compactWindow);
         ready=false;KillTimer(window,1);KillTimer(window,2);if(foregroundHook)UnhookWinEvent(foregroundHook);if(desktopHook)UnhookWinEvent(desktopHook);Shell_NotifyIconW(NIM_DELETE,&tray);PostQuitMessage(0);return 0;
     }
@@ -1127,6 +1126,7 @@ int WINAPI wWinMain(HINSTANCE app,HINSTANCE,LPWSTR,int) {
     int y=std::clamp<LONG>(state.y,info.rcWork.top,(std::max)(info.rcWork.top,info.rcWork.bottom-height));
     mainWindow=CreateWindowExW(WS_EX_APPWINDOW|(state.topmost?WS_EX_TOPMOST:0),L"FloatingTodoMain",L"浮光待办",WS_POPUP|WS_CAPTION|WS_SYSMENU|WS_THICKFRAME|WS_CLIPCHILDREN,x,y,width,height,nullptr,nullptr,instance,nullptr);
     require(mainWindow!=nullptr,L"无法创建待办窗口。");
+    initializeTaskbarPanel(instance,mainWindow,state,ShowRequest,TaskbarMenuRequest);
     SetWindowPos(mainWindow,nullptr,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE|SWP_FRAMECHANGED);
     int corner=2;DwmSetWindowAttribute(mainWindow,33,&corner,sizeof(corner));
     require(CreateWindowExW(WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE,L"FloatingTodoCompact",L"浮光待办 · 收起",WS_POPUP|WS_CLIPCHILDREN,x,y,cp(304),cp(66),nullptr,nullptr,instance,nullptr)!=nullptr,L"无法创建收起窗口。");

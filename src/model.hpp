@@ -52,7 +52,7 @@ enum class CollapseMode { Capsule, TopBar, Hidden, Taskbar };
 constexpr const wchar_t* CollapseNames[] = {L"胶囊", L"屏幕顶部长条", L"完全隐藏", L"任务栏"};
 
 struct CompactInfo {
-    std::wstring tasks, schedule, timer, details;
+    std::wstring tasks, schedule, scheduleShort, timer, details;
 };
 
 struct State {
