@@ -215,10 +215,12 @@ void State::load(const std::filesystem::path& file) {
     }
     automatic = root.at("automatic").get<bool>();
     topmost = root.at("topmost").get<bool>();
+    theme = root.value("theme", 0);
+    require(theme >= 0 && theme <= 2, L"主题设置无效。");
     const auto& bounds = root.at("window");
     x = bounds.at("x").get<int>(); y = bounds.at("y").get<int>();
-    width = std::clamp(bounds.at("width").get<int>(), 220, 900);
-    height = std::clamp(bounds.at("height").get<int>(), 160, 1200);
+    width = std::clamp(bounds.at("width").get<int>(), 240, 900);
+    height = std::clamp(bounds.at("height").get<int>(), 200, 1200);
     if (root.value("layoutVersion", 1) < 2) {
         width = 260;
         height = 300;
@@ -226,7 +228,7 @@ void State::load(const std::filesystem::path& file) {
 }
 
 void State::save(const std::filesystem::path& file) const {
-    json root{{"version", 1}, {"layoutVersion", 2}, {"automatic", automatic}, {"topmost", topmost},
+    json root{{"version", 1}, {"layoutVersion", 2}, {"automatic", automatic}, {"topmost", topmost}, {"theme", theme},
         {"window", {{"x", x}, {"y", y}, {"width", width}, {"height", height}}},
         {"tasks", json::array()}, {"rules", json::array()}, {"schedules", json::array()}};
     for (const auto& task : tasks) root["tasks"].push_back({{"id", task.id}, {"text", utf8(task.text)}, {"done", task.done}});

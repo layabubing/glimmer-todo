@@ -55,6 +55,7 @@ struct State {
     Pomodoro pomodoro;
     bool automatic = true;
     bool topmost = true;
+    int theme = 0;
     int x = -1, y = -1, width = 260, height = 300;
     uint64_t nextId = 1;
 

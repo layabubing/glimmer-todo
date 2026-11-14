@@ -1,4 +1,5 @@
 #include "../src/model.hpp"
+#include "../src/theme.hpp"
 #include <iostream>
 #include <fstream>
 
@@ -65,6 +66,13 @@ int main() {
     check(replaced.tasks.size()==2 && replaced.tasks[0].id==second, "atomic replacement");
     check(!std::filesystem::exists(file.wstring()+L".pending"), "no partial file after save");
     check(wide(utf8(L"中文与 emoji 📝"))==L"中文与 emoji 📝", "UTF8 round trip");
+    for(int theme=0;theme<3;++theme) {
+        state.theme=theme;state.save(directory/L"theme.json");State themed;themed.load(directory/L"theme.json");
+        check(themed.theme==theme,"theme survives restart");
+        check(themePalette(theme).text!=themePalette(theme).surface,"theme text has distinct color");
+    }
+    check(transitionProgress(0)==0.0 && transitionProgress(180)==1.0 && transitionProgress(1000)==1.0,"animation endpoints");
+    check(transitionProgress(45)<transitionProgress(90)&&transitionProgress(90)<transitionProgress(135),"animation progresses forward");
     auto now=nowSeconds();
     auto local=localTime(now); local.wSecond=0; local.wMilliseconds=0;
     check(timestampFromLocal(local)>0 && localTime(timestampFromLocal(local)).wHour==local.wHour,"local schedule time round trip");
