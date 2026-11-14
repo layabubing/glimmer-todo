@@ -18,9 +18,24 @@ struct Rule {
     bool enabled = true;
 };
 
+struct Schedule {
+    uint64_t id;
+    std::wstring text;
+    int64_t due;
+    int repeat = 0;
+    bool done = false;
+    bool notified = false;
+};
+
+int64_t nowSeconds();
+SYSTEMTIME localTime(int64_t timestamp);
+int64_t timestampFromLocal(const SYSTEMTIME& local);
+std::wstring formatDate(int64_t timestamp);
+
 struct State {
     std::vector<Task> tasks;
     std::vector<Rule> rules;
+    std::vector<Schedule> schedules;
     bool automatic = true;
     bool topmost = true;
     int x = -1, y = -1, width = 260, height = 300;
@@ -33,6 +48,8 @@ struct State {
     void removeTask(uint64_t id);
     bool addRule(const std::wstring& executable);
     bool matches(const std::wstring& executable) const;
+    bool putSchedule(uint64_t id, const std::wstring& text, int64_t due, int repeat);
+    void completeSchedule(uint64_t id, int64_t now);
     void load(const std::filesystem::path& file);
     void save(const std::filesystem::path& file) const;
 };

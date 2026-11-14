@@ -17,12 +17,17 @@ constexpr UINT ShowRequest = WM_APP + 3;
 constexpr int AddId = 101, InputId = 102, ListId = 103, SettingsId = 104, HideId = 105;
 constexpr int AutoId = 201, TopId = 202, RulesId = 203, RuleInputId = 204, RuleAddId = 205, BrowseId = 206, RemoveId = 207;
 constexpr int UpdateId = 208;
+constexpr int TabsId = 110, ScheduleListId = 111, ScheduleAddId = 112, ScheduleSaveId = 113;
 constexpr int MenuShow = 301, MenuAuto = 302, MenuTop = 303, MenuSettings = 304, MenuExit = 305, MenuClear = 306;
 HINSTANCE instance;
 HWND mainWindow, taskList, input, addButton, settingsButton, hideButton;
 HWND settingsWindow, rulesList, ruleInput, automaticBox, topmostBox;
 HWND fileDialog;
 HWND updateButton, updateLabel;
+HWND tabs, scheduleList, scheduleAdd, scheduleWindow, scheduleText, scheduleDate, scheduleTime, scheduleRepeat;
+int activeView = 0;
+uint64_t scheduleEditingId = 0;
+ULONGLONG nextNotice = 0;
 HFONT bodyFont, smallFont, rowFont, doneFont;
 HBRUSH paperBrush, whiteBrush;
 HICON appIcon;
@@ -94,6 +99,43 @@ void save() { state.save(dataFile); }
 
 void updateTray();
 void evaluateForeground();
+void openSchedule(uint64_t id = 0);
+void layout();
+
+void notify(const std::wstring& title, const std::wstring& message) {
+    NOTIFYICONDATAW info = tray; info.uFlags = NIF_INFO;
+    lstrcpynW(info.szInfoTitle, title.c_str(), static_cast<int>(std::size(info.szInfoTitle)));
+    lstrcpynW(info.szInfo, message.c_str(), static_cast<int>(std::size(info.szInfo)));
+    info.dwInfoFlags = NIIF_INFO; Shell_NotifyIconW(NIM_MODIFY, &info);
+    nextNotice = GetTickCount64() + 6000;
+}
+
+void refreshSchedules() {
+    SendMessageW(scheduleList, WM_SETREDRAW, FALSE, 0);
+    SendMessageW(scheduleList, LB_RESETCONTENT, 0, 0);
+    for (const auto& event : state.schedules) {
+        auto text = formatDate(event.due) + L" " + event.text + (event.done ? L"（已完成）" : L"");
+        auto index = SendMessageW(scheduleList, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(text.c_str()));
+        require(index != LB_ERR && index != LB_ERRSPACE, L"无法显示日程。");
+    }
+    SendMessageW(scheduleList, WM_SETREDRAW, TRUE, 0); InvalidateRect(scheduleList, nullptr, TRUE);
+}
+
+void scheduleNotices() {
+    if (automaticallyHidden || GetTickCount64() < nextNotice) return;
+    for (auto& event : state.schedules) {
+        if (event.done || event.notified || event.due > nowSeconds()) continue;
+        notify(L"日程提醒", formatDate(event.due) + L"\n" + event.text);
+        event.notified = true; save(); return;
+    }
+}
+
+void selectView(int view) {
+    activeView = view;
+    for (auto window : {taskList, input, addButton}) ShowWindow(window, view == 0 ? SW_SHOWNA : SW_HIDE);
+    for (auto window : {scheduleList, scheduleAdd}) ShowWindow(window, view == 1 ? SW_SHOWNA : SW_HIDE);
+    layout();
+}
 
 void refreshTasks(int selection = -1) {
     const int oldTop = static_cast<int>(SendMessageW(taskList, LB_GETTOPINDEX, 0, 0));
@@ -158,11 +200,36 @@ LRESULT CALLBACK inputProc(HWND window, UINT message, WPARAM wParam, LPARAM lPar
 
 LRESULT CALLBACK listProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR, DWORD_PTR) {
     if (message == WM_GETDLGCODE && wParam == VK_RETURN) return DLGC_WANTALLKEYS;
-    if (message == WM_PAINT && state.tasks.empty()) {
+    if (message == WM_PAINT && (window == taskList ? state.tasks.empty() : state.schedules.empty())) {
         PAINTSTRUCT paint{}; auto dc = BeginPaint(window, &paint);
         RECT rect{}; GetClientRect(window, &rect); FillRect(dc, &rect, paperBrush);
-        label(dc, L"暂无待办", {0,rect.bottom / 2 - px(12),rect.right,rect.bottom / 2 + px(12)}, bodyFont, Muted, DT_CENTER|DT_SINGLELINE|DT_VCENTER);
+        label(dc, window == taskList ? L"暂无待办" : L"暂无日程", {0,rect.bottom / 2 - px(12),rect.right,rect.bottom / 2 + px(12)}, bodyFont, Muted, DT_CENTER|DT_SINGLELINE|DT_VCENTER);
         EndPaint(window, &paint); return 0;
+    }
+    if (window == scheduleList) {
+        auto act = [&](int action) {
+            int index = static_cast<int>(SendMessageW(window, LB_GETCURSEL, 0, 0));
+            if (index < 0 || index >= static_cast<int>(state.schedules.size())) return;
+            auto id = state.schedules[index].id;
+            if (action == 0) state.completeSchedule(id, nowSeconds());
+            if (action == 1) std::erase_if(state.schedules, [id](const Schedule& event) { return event.id == id; });
+            if (action == 2) { openSchedule(id); return; }
+            save(); refreshSchedules();
+        };
+        if (message == WM_KEYDOWN) {
+            if (wParam == VK_SPACE) { act(0); return 0; }
+            if (wParam == VK_DELETE) { act(1); return 0; }
+            if (wParam == VK_F2 || wParam == VK_RETURN) { act(2); return 0; }
+        }
+        if (message == WM_LBUTTONDOWN) {
+            auto hit = SendMessageW(window, LB_ITEMFROMPOINT, 0, lParam);
+            if (!HIWORD(hit)) {
+                RECT rect{}; GetClientRect(window, &rect); SendMessageW(window, LB_SETCURSEL, LOWORD(hit), 0); SetFocus(window);
+                if (GET_X_LPARAM(lParam) < px(30)) { act(0); return 0; }
+                if (GET_X_LPARAM(lParam) > rect.right - px(26)) { act(1); return 0; }
+            }
+        }
+        return DefSubclassProc(window, message, wParam, lParam);
     }
     if (message == WM_KEYDOWN) {
         if (wParam == VK_SPACE) { toggleSelected(); return 0; }
@@ -189,12 +256,64 @@ HWND child(const wchar_t* type, const wchar_t* text, DWORD style, HWND parent, i
     return window;
 }
 
+LRESULT CALLBACK scheduleProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
+    if (message == WM_CREATE) {
+        scheduleWindow = window;
+        auto title = child(L"STATIC", L"日程内容", 0, window, -1); MoveWindow(title,px(14),px(12),px(340),px(20),TRUE);
+        scheduleText = child(L"EDIT",L"",WS_TABSTOP|WS_BORDER|ES_AUTOHSCROLL,window,401);
+        MoveWindow(scheduleText,px(14),px(36),px(342),px(28),TRUE); SendMessageW(scheduleText,EM_SETLIMITTEXT,500,0);
+        auto when = child(L"STATIC",L"日期与时间（本地时间）",0,window,-1); MoveWindow(when,px(14),px(76),px(342),px(20),TRUE);
+        scheduleDate = child(DATETIMEPICK_CLASSW,L"日期",WS_TABSTOP|DTS_SHORTDATEFORMAT,window,402);
+        scheduleTime = child(DATETIMEPICK_CLASSW,L"时间",WS_TABSTOP|DTS_TIMEFORMAT|DTS_UPDOWN,window,403);
+        MoveWindow(scheduleDate,px(14),px(100),px(190),px(28),TRUE); MoveWindow(scheduleTime,px(214),px(100),px(142),px(28),TRUE);
+        DateTime_SetFormat(scheduleDate,L"yyyy-MM-dd"); DateTime_SetFormat(scheduleTime,L"HH:mm");
+        auto repeat = child(L"STATIC",L"重复",0,window,-1); MoveWindow(repeat,px(14),px(144),px(55),px(24),TRUE);
+        scheduleRepeat = child(L"COMBOBOX",L"重复",WS_TABSTOP|CBS_DROPDOWNLIST,window,404);
+        MoveWindow(scheduleRepeat,px(76),px(142),px(150),px(110),TRUE);
+        for (auto option : {L"不重复",L"每天",L"每周"}) SendMessageW(scheduleRepeat,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(option));
+        auto note = child(L"STATIC",L"到时通过系统托盘提醒；游戏前台时延后提醒。",0,window,-1); MoveWindow(note,px(14),px(184),px(342),px(36),TRUE);
+        auto button = child(L"BUTTON",L"保存日程",WS_TABSTOP|BS_DEFPUSHBUTTON,window,ScheduleSaveId); MoveWindow(button,px(244),px(230),px(112),px(28),TRUE);
+        return 0;
+    }
+    if (message == WM_COMMAND && LOWORD(wParam) == ScheduleSaveId) {
+        SYSTEMTIME date{}, time{};
+        if (DateTime_GetSystemtime(scheduleDate,&date)!=GDT_VALID || DateTime_GetSystemtime(scheduleTime,&time)!=GDT_VALID) return 0;
+        date.wHour=time.wHour; date.wMinute=time.wMinute; date.wSecond=0; date.wMilliseconds=0;
+        auto due=timestampFromLocal(date); int repeat=static_cast<int>(SendMessageW(scheduleRepeat,CB_GETCURSEL,0,0));
+        if (!state.putSchedule(scheduleEditingId,textOf(scheduleText),due,repeat)) { MessageBoxW(window,L"请填写日程内容和有效的日期时间。",L"保存日程",MB_OK|MB_ICONINFORMATION); return 0; }
+        save(); refreshSchedules(); DestroyWindow(window); return 0;
+    }
+    if (message == WM_COMMAND && LOWORD(wParam) == IDCANCEL) { DestroyWindow(window); return 0; }
+    if (message == WM_CLOSE) { DestroyWindow(window); return 0; }
+    if (message == WM_DESTROY) { scheduleWindow=nullptr; return 0; }
+    if (message == WM_CTLCOLORSTATIC) { SetBkColor(reinterpret_cast<HDC>(wParam),Paper); return reinterpret_cast<LRESULT>(paperBrush); }
+    return DefWindowProcW(window,message,wParam,lParam);
+}
+
+void openSchedule(uint64_t id) {
+    if (scheduleWindow) { SetForegroundWindow(scheduleWindow); return; }
+    scheduleEditingId = id;
+    RECT bounds{0,0,px(370),px(272)}; AdjustWindowRectExForDpi(&bounds,WS_CAPTION|WS_SYSMENU,FALSE,WS_EX_TOOLWINDOW,dpi);
+    RECT owner{}; GetWindowRect(mainWindow,&owner); MONITORINFO info{sizeof(info)}; GetMonitorInfoW(MonitorFromWindow(mainWindow,MONITOR_DEFAULTTONEAREST),&info);
+    int width=bounds.right-bounds.left,height=bounds.bottom-bounds.top;
+    int x=std::clamp<LONG>(owner.left,info.rcWork.left,std::max(info.rcWork.left,info.rcWork.right-width));
+    int y=std::clamp<LONG>(owner.top,info.rcWork.top,std::max(info.rcWork.top,info.rcWork.bottom-height));
+    require(CreateWindowExW(WS_EX_TOOLWINDOW,L"FloatingTodoSchedule",id?L"编辑日程":L"新增日程",WS_CAPTION|WS_SYSMENU,x,y,width,height,mainWindow,nullptr,instance,nullptr)!=nullptr,L"无法打开日程编辑器。");
+    int64_t due=nowSeconds()+3600; int repeat=0;
+    if (id) for (const auto& event : state.schedules) if (event.id==id) { due=event.due; repeat=event.repeat; SetWindowTextW(scheduleText,event.text.c_str()); }
+    auto local=localTime(due); DateTime_SetSystemtime(scheduleDate,GDT_VALID,&local); DateTime_SetSystemtime(scheduleTime,GDT_VALID,&local);
+    SendMessageW(scheduleRepeat,CB_SETCURSEL,repeat,0); ShowWindow(scheduleWindow,SW_SHOW); SetFocus(scheduleText);
+}
+
 void layout() {
     RECT bounds{}; GetClientRect(mainWindow, &bounds);
     int width = bounds.right, height = bounds.bottom;
     MoveWindow(settingsButton, width - px(84), px(6), px(38), px(26), TRUE);
     MoveWindow(hideButton, width - px(44), px(6), px(36), px(26), TRUE);
-    MoveWindow(taskList, px(8), px(40), width - px(16), (std::max)(px(32), height - px(88)), TRUE);
+    MoveWindow(tabs, px(8), px(36), width - px(16), px(27), TRUE);
+    MoveWindow(taskList, px(8), px(68), width - px(16), (std::max)(px(32), height - px(116)), TRUE);
+    MoveWindow(scheduleList, px(8), px(68), width - px(16), (std::max)(px(32), height - px(116)), TRUE);
+    MoveWindow(scheduleAdd, px(8), height - px(39), width - px(16), px(30), TRUE);
     MoveWindow(input, px(16), height - px(33), width - px(66), px(20), TRUE);
     MoveWindow(addButton, width - px(43), height - px(36), px(28), px(26), TRUE);
     InvalidateRect(mainWindow, nullptr, TRUE);
@@ -211,13 +330,24 @@ void paintMain(HWND window) {
     label(dc, L"待办", {px(24), px(6), px(54), px(32)}, bodyFont, Ink);
     size_t done = std::count_if(state.tasks.begin(), state.tasks.end(), [](const Task& task) { return task.done; });
     label(dc, std::to_wstring(done) + L"/" + std::to_wstring(state.tasks.size()), {px(58), px(6), width - px(90), px(32)}, smallFont, Muted);
-    rounded(dc, {px(8), height - px(42), width - px(8), height - px(7)}, RGB(255,255,255), 6, RGB(225,230,223));
+    if (activeView == 0) rounded(dc, {px(8), height - px(42), width - px(8), height - px(7)}, RGB(255,255,255), 6, RGB(225,230,223));
     BitBlt(target, 0, 0, rect.right, rect.bottom, dc, 0, 0, SRCCOPY);
     SelectObject(dc, previous); DeleteObject(bitmap); DeleteDC(dc); EndPaint(window, &paint);
 }
 
 void drawItem(const DRAWITEMSTRUCT* item) {
-    if (item->CtlID == ListId) {
+    if (item->CtlID == ScheduleListId) {
+        if (item->itemID == static_cast<UINT>(-1) || item->itemID >= state.schedules.size()) return;
+        const auto& event = state.schedules[item->itemID]; auto row = item->rcItem;
+        fill(item->hDC, row, item->itemState & ODS_SELECTED ? Soft : Paper);
+        int x = row.left + px(7), y = row.top + px(18);
+        rounded(item->hDC, {x,y,x+px(14),y+px(14)}, event.done ? Green : Paper, 3, event.done ? Green : Muted);
+        if (event.done) checkMark(item->hDC,x+px(2),y+px(2),RGB(255,255,255));
+        label(item->hDC,event.text,{row.left+px(30),row.top+px(3),row.right-px(26),row.top+px(25)},event.done?doneFont:bodyFont,event.done?Muted:Ink);
+        auto time = formatDate(event.due) + (event.repeat == 1 ? L" · 每天" : event.repeat == 2 ? L" · 每周" : L"");
+        label(item->hDC,time,{row.left+px(30),row.top+px(26),row.right-px(4),row.bottom-px(2)},smallFont,event.due<nowSeconds()&&!event.done?Green:Muted);
+        label(item->hDC,L"×",{row.right-px(24),row.top,row.right-px(4),row.top+px(26)},bodyFont,Muted,DT_CENTER|DT_VCENTER|DT_SINGLELINE);
+    } else if (item->CtlID == ListId) {
         if (item->itemID == static_cast<UINT>(-1) || item->itemID >= state.tasks.size()) return;
         const auto& task = state.tasks[item->itemID];
         RECT row = item->rcItem;
@@ -265,11 +395,13 @@ void evaluateForeground() {
     if (!shouldShow) {
         if (fileDialog && IsWindowVisible(fileDialog)) ShowWindow(fileDialog, SW_HIDE);
         if (settingsWindow && IsWindowVisible(settingsWindow)) ShowWindow(settingsWindow, SW_HIDE);
+        if (scheduleWindow && IsWindowVisible(scheduleWindow)) ShowWindow(scheduleWindow, SW_HIDE);
         if (IsWindowVisible(mainWindow)) ShowWindow(mainWindow, SW_HIDE);
-    } else if (followCurrentDesktop({mainWindow, settingsWindow, fileDialog})) {
+    } else if (followCurrentDesktop({mainWindow, settingsWindow, fileDialog, scheduleWindow})) {
         if (!IsWindowVisible(mainWindow)) ShowWindow(mainWindow, SW_SHOWNOACTIVATE);
         if (settingsWindow && !IsWindowVisible(settingsWindow)) ShowWindow(settingsWindow, SW_SHOWNOACTIVATE);
         if (fileDialog && !IsWindowVisible(fileDialog)) ShowWindow(fileDialog, SW_SHOWNOACTIVATE);
+        if (scheduleWindow && !IsWindowVisible(scheduleWindow)) ShowWindow(scheduleWindow, SW_SHOWNOACTIVATE);
     }
     if (changed) updateTray();
 }
@@ -459,6 +591,7 @@ void openSettings() {
 
 void command(int id) {
     switch(id) {
+    case ScheduleAddId: openSchedule(); break;
     case AddId: submitTask(); break;
     case SettingsId: case MenuSettings: openSettings(); break;
     case HideId: case MenuShow: manuallyHidden=!manuallyHidden; evaluateForeground(); updateTray(); break;
@@ -474,6 +607,8 @@ LRESULT CALLBACK mainProc(HWND window,UINT message,WPARAM wParam,LPARAM lParam) 
     switch(message) {
     case WM_CREATE:
         mainWindow=window;
+        tabs=child(WC_TABCONTROLW,L"功能",WS_TABSTOP,window,TabsId);
+        { TCITEMW item{}; item.mask=TCIF_TEXT; item.pszText=const_cast<wchar_t*>(L"待办"); TabCtrl_InsertItem(tabs,0,&item); item.pszText=const_cast<wchar_t*>(L"日程"); TabCtrl_InsertItem(tabs,1,&item); }
         settingsButton=child(L"BUTTON",L"设置",BS_OWNERDRAW|WS_TABSTOP,window,SettingsId);
         hideButton=child(L"BUTTON",L"收起",BS_OWNERDRAW|WS_TABSTOP,window,HideId);
         taskList=child(L"LISTBOX",L"待办列表",WS_TABSTOP|WS_VSCROLL|LBS_NOTIFY|LBS_NOINTEGRALHEIGHT|LBS_OWNERDRAWFIXED|LBS_HASSTRINGS,window,ListId);
@@ -481,7 +616,10 @@ LRESULT CALLBACK mainProc(HWND window,UINT message,WPARAM wParam,LPARAM lParam) 
         input=child(L"EDIT",L"",WS_TABSTOP|ES_AUTOHSCROLL,window,InputId);
         SendMessageW(input,EM_SETLIMITTEXT,500,0); SetWindowSubclass(input,inputProc,1,0);
         addButton=child(L"BUTTON",L"＋",WS_TABSTOP|BS_OWNERDRAW,window,AddId);
-        cancelEdit(); refreshTasks(); layout(); return 0;
+        scheduleList=child(L"LISTBOX",L"日程列表",WS_TABSTOP|WS_VSCROLL|LBS_NOTIFY|LBS_NOINTEGRALHEIGHT|LBS_OWNERDRAWFIXED|LBS_HASSTRINGS,window,ScheduleListId);
+        SendMessageW(scheduleList,LB_SETITEMHEIGHT,0,px(52)); SetWindowSubclass(scheduleList,listProc,2,0);
+        scheduleAdd=child(L"BUTTON",L"＋ 新增日程",WS_TABSTOP,window,ScheduleAddId);
+        cancelEdit(); refreshTasks(); refreshSchedules(); selectView(0); return 0;
     case WM_SIZE: if(taskList)layout(); return 0;
     case WM_EXITSIZEMOVE: {
         RECT bounds{}; GetWindowRect(window,&bounds); state.x=bounds.left;state.y=bounds.top;
@@ -508,15 +646,20 @@ LRESULT CALLBACK mainProc(HWND window,UINT message,WPARAM wParam,LPARAM lParam) 
     }
     case WM_PAINT: paintMain(window);return 0;
     case WM_ERASEBKGND:return 1;
-    case WM_MEASUREITEM: reinterpret_cast<MEASUREITEMSTRUCT*>(lParam)->itemHeight=px(62);return TRUE;
+    case WM_MEASUREITEM: { auto item=reinterpret_cast<MEASUREITEMSTRUCT*>(lParam); item->itemHeight=px(item->CtlID==ScheduleListId?52:32);return TRUE; }
     case WM_DRAWITEM:drawItem(reinterpret_cast<DRAWITEMSTRUCT*>(lParam));return TRUE;
     case WM_CTLCOLORLISTBOX:SetBkColor(reinterpret_cast<HDC>(wParam),Paper);return reinterpret_cast<LRESULT>(paperBrush);
     case WM_CTLCOLOREDIT:SetBkColor(reinterpret_cast<HDC>(wParam),RGB(255,255,255));SetTextColor(reinterpret_cast<HDC>(wParam),Ink);return reinterpret_cast<LRESULT>(whiteBrush);
-    case WM_COMMAND:if(LOWORD(wParam)==ListId && HIWORD(wParam)==LBN_DBLCLK)editSelected();else command(LOWORD(wParam));return 0;
+    case WM_NOTIFY: if(reinterpret_cast<NMHDR*>(lParam)->idFrom==TabsId && reinterpret_cast<NMHDR*>(lParam)->code==TCN_SELCHANGE)selectView(TabCtrl_GetCurSel(tabs));return 0;
+    case WM_COMMAND:
+        if(LOWORD(wParam)==ScheduleListId && HIWORD(wParam)==LBN_DBLCLK) {
+            int selected=static_cast<int>(SendMessageW(scheduleList,LB_GETCURSEL,0,0));
+            if(selected>=0 && selected<static_cast<int>(state.schedules.size()))openSchedule(state.schedules[selected].id);
+        } else if(LOWORD(wParam)==ListId && HIWORD(wParam)==LBN_DBLCLK)editSelected();else command(LOWORD(wParam));return 0;
     case WM_CONTEXTMENU:menu(window);return 0;
     case ForegroundMessage:evaluateForeground();return 0;
     case ShowRequest:manuallyHidden=false;evaluateForeground();updateTray();return 0;
-    case WM_TIMER:evaluateForeground();refreshUpdate();return 0;
+    case WM_TIMER:evaluateForeground();refreshUpdate();scheduleNotices();return 0;
     case TrayMessage:
         if(lParam==WM_LBUTTONDBLCLK) {manuallyHidden=false;evaluateForeground();updateTray();}
         if(lParam==WM_RBUTTONUP)menu(window);
@@ -560,11 +703,13 @@ int WINAPI wWinMain(HINSTANCE app,HINSTANCE,LPWSTR,int) {
     state.load(dataFile);
     dpi=static_cast<int>(GetDpiForSystem());
     paperBrush=CreateSolidBrush(Paper);whiteBrush=CreateSolidBrush(RGB(255,255,255));fonts();appIcon=createIcon();
-    INITCOMMONCONTROLSEX controls{sizeof(controls),ICC_LISTVIEW_CLASSES|ICC_STANDARD_CLASSES};require(InitCommonControlsEx(&controls)!=FALSE,L"无法初始化界面。");
+    INITCOMMONCONTROLSEX controls{sizeof(controls),ICC_LISTVIEW_CLASSES|ICC_STANDARD_CLASSES|ICC_DATE_CLASSES|ICC_TAB_CLASSES};require(InitCommonControlsEx(&controls)!=FALSE,L"无法初始化界面。");
     WNDCLASSEXW klass{sizeof(klass)};klass.lpfnWndProc=mainProc;klass.hInstance=instance;klass.hCursor=LoadCursorW(nullptr,IDC_ARROW);klass.hIcon=appIcon;klass.hIconSm=appIcon;klass.lpszClassName=L"FloatingTodoMain";
     require(RegisterClassExW(&klass)!=0,L"无法注册待办窗口。");
     klass.lpfnWndProc=settingsProc;klass.lpszClassName=L"FloatingTodoSettings";klass.hbrBackground=paperBrush;
     require(RegisterClassExW(&klass)!=0,L"无法注册设置窗口。");
+    klass.lpfnWndProc=scheduleProc;klass.lpszClassName=L"FloatingTodoSchedule";
+    require(RegisterClassExW(&klass)!=0,L"无法注册日程编辑器。");
     RECT work{};SystemParametersInfoW(SPI_GETWORKAREA,0,&work,0);
     int width=px(state.width),height=px(state.height);
     RECT desired{state.x,state.y,state.x+width,state.y+height};
@@ -586,6 +731,7 @@ int WINAPI wWinMain(HINSTANCE app,HINSTANCE,LPWSTR,int) {
     MSG message{};BOOL result;
     while((result=GetMessageW(&message,nullptr,0,0))>0) {
         if(message.message==WM_KEYDOWN && message.wParam=='N' && (GetKeyState(VK_CONTROL)&0x8000) && (message.hwnd==mainWindow || IsChild(mainWindow,message.hwnd)) && (!settingsWindow || !IsChild(settingsWindow,message.hwnd))) {SetFocus(input);continue;}
+        if(scheduleWindow && IsDialogMessageW(scheduleWindow,&message))continue;
         if(settingsWindow && IsDialogMessageW(settingsWindow,&message))continue;
         if(IsDialogMessageW(mainWindow,&message))continue;
         TranslateMessage(&message);DispatchMessageW(&message);

@@ -2,8 +2,63 @@
 #include "../vendor/json.hpp"
 #include <fstream>
 #include <cwctype>
+#include <ctime>
+#include <chrono>
 
 using nlohmann::json;
+
+int64_t nowSeconds() { return static_cast<int64_t>(std::time(nullptr)); }
+
+SYSTEMTIME localTime(int64_t timestamp) {
+    ULARGE_INTEGER value{}; value.QuadPart = (timestamp + 11644473600LL) * 10000000ULL;
+    FILETIME file{value.LowPart, value.HighPart}; SYSTEMTIME utc{}, local{};
+    require(FileTimeToSystemTime(&file, &utc) != FALSE && SystemTimeToTzSpecificLocalTime(nullptr, &utc, &local) != FALSE, L"日程时间无效。");
+    return local;
+}
+
+int64_t timestampFromLocal(const SYSTEMTIME& local) {
+    SYSTEMTIME utc{}; FILETIME file{};
+    if (!TzSpecificLocalTimeToSystemTime(nullptr, &local, &utc) || !SystemTimeToFileTime(&utc, &file)) return -1;
+    ULARGE_INTEGER value{}; value.LowPart = file.dwLowDateTime; value.HighPart = file.dwHighDateTime;
+    return static_cast<int64_t>(value.QuadPart / 10000000ULL) - 11644473600LL;
+}
+
+std::wstring formatDate(int64_t timestamp) {
+    auto local = localTime(timestamp); wchar_t result[64];
+    swprintf_s(result, L"%04u-%02u-%02u %02u:%02u", local.wYear, local.wMonth, local.wDay, local.wHour, local.wMinute);
+    return result;
+}
+
+bool State::putSchedule(uint64_t id, const std::wstring& value, int64_t due, int repeat) {
+    auto text = trim(value);
+    if (text.empty() || text.size() > 500 || due <= 0 || due > 253402214400LL || repeat < 0 || repeat > 2) return false;
+    if (id == 0) schedules.push_back({nextId++, std::move(text), due, repeat});
+    else {
+        auto existing = std::find_if(schedules.begin(), schedules.end(), [id](const Schedule& event) { return event.id == id; });
+        if (existing == schedules.end()) return false;
+        *existing = {id, std::move(text), due, repeat};
+    }
+    std::stable_sort(schedules.begin(), schedules.end(), [](const Schedule& a, const Schedule& b) { return a.due < b.due; });
+    return true;
+}
+
+void State::completeSchedule(uint64_t id, int64_t now) {
+    for (auto& event : schedules) {
+        if (event.id != id) continue;
+        if (event.repeat == 0) { event.done = !event.done; return; }
+        auto local = localTime(event.due);
+        using namespace std::chrono;
+        auto date = sys_days{year{local.wYear}/month{local.wMonth}/day{local.wDay}};
+        do {
+            date += days{event.repeat == 1 ? 1 : 7};
+            auto next = year_month_day{date}; local.wYear = static_cast<WORD>(int(next.year())); local.wMonth = static_cast<WORD>(unsigned(next.month())); local.wDay = static_cast<WORD>(unsigned(next.day()));
+            event.due = timestampFromLocal(local); require(event.due > 0, L"无法计算下一次重复日程。");
+        } while (event.due <= now);
+        event.notified = false; event.done = false;
+        break;
+    }
+    std::stable_sort(schedules.begin(), schedules.end(), [](const Schedule& a, const Schedule& b) { return a.due < b.due; });
+}
 
 [[noreturn]] void fatal(const std::wstring& message) {
     MessageBoxW(nullptr, message.c_str(), L"浮光待办 · 错误", MB_OK | MB_ICONERROR);
@@ -115,6 +170,14 @@ void State::load(const std::filesystem::path& file) {
         require(addRule(rule.exe), L"软件规则数据无效。");
         rules.back() = std::move(rule);
     }
+    schedules.clear();
+    if (root.contains("schedules")) for (const auto& entry : root.at("schedules")) {
+        Schedule event{entry.at("id").get<uint64_t>(), wide(entry.at("text").get<std::string>()), entry.at("due").get<int64_t>(), entry.at("repeat").get<int>(), entry.at("done").get<bool>(), entry.at("notified").get<bool>()};
+        require(event.id > 0 && event.id < UINT64_MAX && std::none_of(schedules.begin(), schedules.end(), [&](const Schedule& other) { return other.id == event.id; }), L"日程编号无效。");
+        require(!trim(event.text).empty() && event.text.size() <= 500 && event.due > 0 && event.due <= 253402214400LL && event.repeat >= 0 && event.repeat <= 2, L"日程数据无效。");
+        nextId = (std::max)(nextId, event.id + 1); schedules.push_back(std::move(event));
+    }
+    std::stable_sort(schedules.begin(), schedules.end(), [](const Schedule& a, const Schedule& b) { return a.due < b.due; });
     automatic = root.at("automatic").get<bool>();
     topmost = root.at("topmost").get<bool>();
     const auto& bounds = root.at("window");
@@ -130,9 +193,10 @@ void State::load(const std::filesystem::path& file) {
 void State::save(const std::filesystem::path& file) const {
     json root{{"version", 1}, {"layoutVersion", 2}, {"automatic", automatic}, {"topmost", topmost},
         {"window", {{"x", x}, {"y", y}, {"width", width}, {"height", height}}},
-        {"tasks", json::array()}, {"rules", json::array()}};
+        {"tasks", json::array()}, {"rules", json::array()}, {"schedules", json::array()}};
     for (const auto& task : tasks) root["tasks"].push_back({{"id", task.id}, {"text", utf8(task.text)}, {"done", task.done}});
     for (const auto& rule : rules) root["rules"].push_back({{"label", utf8(rule.label)}, {"exe", utf8(rule.exe)}, {"enabled", rule.enabled}});
+    for (const auto& event : schedules) root["schedules"].push_back({{"id", event.id}, {"text", utf8(event.text)}, {"due", event.due}, {"repeat", event.repeat}, {"done", event.done}, {"notified", event.notified}});
     std::filesystem::create_directories(file.parent_path());
     auto pending = file;
     pending += L".pending";
