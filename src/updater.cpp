@@ -33,7 +33,8 @@ bool get(const std::wstring& url, std::string& data, size_t limit) {
     if (!WinHttpCrackUrl(url.c_str(), 0, 0, &parts) || parts.nScheme != INTERNET_SCHEME_HTTPS) { error(L"更新下载地址无效。"); return false; }
     std::wstring host(parts.lpszHostName, parts.dwHostNameLength);
     std::wstring path(parts.lpszUrlPath, parts.dwUrlPathLength); path.append(parts.lpszExtraInfo, parts.dwExtraInfoLength);
-    Internet session{WinHttpOpen(L"GlimmerTodo/1.2", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, nullptr, nullptr, 0)};
+    auto agent=L"GlimmerTodo/"+wide(AppVersion);
+    Internet session{WinHttpOpen(agent.c_str(), WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, nullptr, nullptr, 0)};
     if (!session.handle) { error(L"无法初始化更新网络连接。"); return false; }
     WinHttpSetTimeouts(session.handle, 10000, 10000, 15000, 30000);
     Internet connection{WinHttpConnect(session.handle, host.c_str(), parts.nPort, 0)};
