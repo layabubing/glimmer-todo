@@ -13,3 +13,7 @@ The executable also uses the GCC C++ and compiler runtime libraries under
 GPLv3 with the GCC Runtime Library Exception 3.1. The accompanying license
 texts are provided in `vendor/COPYING.GPL3` and `vendor/COPYING.RUNTIME`, and
 in the release's `licenses` directory.
+
+The product film uses a Counter-Strike 2 main-menu screenshot. Counter-Strike 2
+and its game artwork belong to Valve. The screenshot was published by Steam
+Community user **1**. [Original screenshot](https://steamcommunity.com/sharedfiles/filedetails/?id=3174259426)
