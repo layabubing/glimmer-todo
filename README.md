@@ -4,7 +4,7 @@ Windows 桌面悬浮待办、日程与番茄钟工具，使用 C++20 和 Windows
 
 ## 下载
 
-从本仓库的 Releases 页面下载 `GlimmerTodo-v1.4.1-windows-x64.zip`，解压后双击 `GlimmerTodo.exe` 运行。
+从本仓库的 Releases 页面下载 `GlimmerTodo-v1.4.2-windows-x64.zip`，解压后双击 `GlimmerTodo.exe` 运行。
 
 默认窗口为 260 × 300，最小可调整至 240 × 200；尺寸使用 Windows 逻辑像素。界面包含紧凑标题、分段导航、圆角待办卡片和新增输入框。标题旁的主题色圆点表示自动隐藏已开启。
 

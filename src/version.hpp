@@ -1,2 +1,2 @@
 #pragma once
-inline constexpr char AppVersion[] = "1.4.1";
+inline constexpr char AppVersion[] = "1.4.2";
