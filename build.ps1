@@ -15,6 +15,10 @@ if ($Test) {
     if ($LASTEXITCODE -ne 0) { throw '测试编译失败' }
     & '.\build\model_tests.exe'
     if ($LASTEXITCODE -ne 0) { throw '测试失败' }
+    & g++ @options 'tests\window_modes.cpp' 'src\model.cpp' 'src\virtual_desktop.cpp' 'src\updater.cpp' 'build\app.res' '-o' 'build\window_modes.exe' '-lcomctl32' '-lcomdlg32' '-lshell32' '-lole32' '-ldwmapi' '-luuid' '-ladvapi32' '-lwinhttp' '-lbcrypt' '-lshlwapi' '-luxtheme' '-lgdi32'
+    if ($LASTEXITCODE -ne 0) { throw '窗口模式检查编译失败' }
+    & '.\build\window_modes.exe'
+    if ($LASTEXITCODE -ne 0) { throw '窗口模式检查失败' }
     & g++ @options 'tests\window_probe.cpp' '-o' 'build\window_probe.exe' '-lpsapi' '-luser32'
     if ($LASTEXITCODE -ne 0) { throw '窗口诊断工具编译失败' }
 }

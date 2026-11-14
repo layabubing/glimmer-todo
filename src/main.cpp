@@ -21,12 +21,18 @@ constexpr UINT ShowRequest = WM_APP + 3;
 constexpr int AddId = 101, InputId = 102, ListId = 103, SettingsId = 104, HideId = 105;
 constexpr int AutoId = 201, TopId = 202, RulesId = 203, RuleInputId = 204, RuleAddId = 205, BrowseId = 206, RemoveId = 207;
 constexpr int UpdateId = 208, ThemeId = 209, ThemeChoiceId = 210;
+constexpr int CollapseChoiceId = 211, CollapseFirstId = 320, ExpandId = 324, CompactMenuId = 325;
 constexpr int ScheduleListId = 111, ScheduleAddId = 112, ScheduleSaveId = 113, ViewFirstId = 114;
 constexpr int PomoStartId = 120, PomoResetId = 121, PomoSkipId = 122, PomoConfigId = 123;
 constexpr int MenuShow = 301, MenuAuto = 302, MenuTop = 303, MenuSettings = 304, MenuExit = 305, MenuClear = 306;
 HINSTANCE instance;
 HWND mainWindow, taskList, input, addButton, settingsButton, hideButton, themeButton, themeChoice;
 HWND settingsWindow, rulesList, ruleInput, automaticBox, topmostBox;
+HWND compactWindow, compactExpand, compactMenu, compactTooltip, collapseChoice;
+HFONT compactFont, compactSmallFont;
+int compactDpi = 96;
+bool applyingVisibility = false;
+std::wstring compactDetails, lastTrayTip;
 HWND fileDialog;
 HWND updateButton, updateLabel;
 HWND scheduleList, scheduleAdd, scheduleWindow, scheduleText, scheduleDate, scheduleTime, scheduleRepeat;
@@ -119,6 +125,11 @@ void layout();
 void refreshPomodoro();
 void applyTheme();
 void chooseTheme();
+void applyVisibility();
+void positionCompact();
+void refreshCompact();
+void command(int id);
+void menu(HWND owner);
 
 void notify(const std::wstring& title, const std::wstring& message) {
     NOTIFYICONDATAW info = tray; info.uFlags = NIF_INFO;
@@ -369,6 +380,7 @@ void applyTheme() {
         SetWindowSubclass(ListView_GetHeader(rulesList),headerProc,11,0);
     }
     for(auto window:{mainWindow,settingsWindow,scheduleWindow})themeWindow(window);
+    if(compactWindow)RedrawWindow(compactWindow,nullptr,nullptr,RDW_INVALIDATE|RDW_ALLCHILDREN);
     if(themeChoice)SendMessageW(themeChoice,CB_SETCURSEL,state.theme,0);
     for(auto date:{scheduleDate,scheduleTime})if(IsWindow(date)) {
         DateTime_SetMonthCalColor(date,MCSC_BACKGROUND,Surface);DateTime_SetMonthCalColor(date,MCSC_MONTHBK,Surface);DateTime_SetMonthCalColor(date,MCSC_TEXT,Ink);
@@ -595,30 +607,147 @@ std::wstring foregroundExe(HWND window) {
     return queried ? normalizeExe(std::wstring(path, length)) : std::wstring{};
 }
 
-void evaluateForeground() {
-    if (!ready) return;
-    HWND foreground = GetForegroundWindow();
-    // 焦点切换期间的空句柄维持已有显示状态。
-    if (!foreground) return;
-    if (!isOnCurrentDesktop(foreground)) return;
-    DWORD cloaked = 0;
-    if (SUCCEEDED(DwmGetWindowAttribute(foreground, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) && cloaked) return;
-    bool hidden = state.matches(foregroundExe(foreground));
-    bool changed = automaticallyHidden != hidden;
-    automaticallyHidden = hidden;
-    bool shouldShow = !manuallyHidden && !automaticallyHidden;
-    if (!shouldShow) {
-        if (fileDialog && IsWindowVisible(fileDialog)) ShowWindow(fileDialog, SW_HIDE);
-        if (settingsWindow && IsWindowVisible(settingsWindow)) ShowWindow(settingsWindow, SW_HIDE);
-        if (scheduleWindow && IsWindowVisible(scheduleWindow)) ShowWindow(scheduleWindow, SW_HIDE);
-        if (IsWindowVisible(mainWindow)) ShowWindow(mainWindow, SW_HIDE);
-    } else if (followCurrentDesktop({mainWindow, settingsWindow, fileDialog, scheduleWindow})) {
-        if (!IsWindowVisible(mainWindow)) ShowWindow(mainWindow, SW_SHOWNOACTIVATE);
-        if (settingsWindow && !IsWindowVisible(settingsWindow)) ShowWindow(settingsWindow, SW_SHOWNOACTIVATE);
-        if (fileDialog && !IsWindowVisible(fileDialog)) ShowWindow(fileDialog, SW_SHOWNOACTIVATE);
-        if (scheduleWindow && !IsWindowVisible(scheduleWindow)) ShowWindow(scheduleWindow, SW_SHOWNOACTIVATE);
+int cp(int value) { return MulDiv(value, compactDpi, 96); }
+
+void compactFonts() {
+    for(auto font:{compactFont,compactSmallFont})if(font)DeleteObject(font);
+    compactFont=CreateFontW(-cp(12),0,0,0,FW_SEMIBOLD,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Microsoft YaHei UI");
+    compactSmallFont=CreateFontW(-cp(11),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Microsoft YaHei UI");
+    require(compactFont && compactSmallFont,L"无法创建收起窗口字体。");
+}
+
+void positionCompact() {
+    if(!compactWindow)return;
+    bool bar=state.collapseMode==CollapseMode::TopBar;
+    RECT desired{state.capsuleX,state.capsuleY,state.capsuleX+1,state.capsuleY+1};
+    HMONITOR monitor=bar || (state.capsuleX==-1 && state.capsuleY==-1)?MonitorFromWindow(mainWindow,MONITOR_DEFAULTTONEAREST):MonitorFromRect(&desired,MONITOR_DEFAULTTONEAREST);
+    MONITORINFO info{sizeof(info)};require(GetMonitorInfoW(monitor,&info)!=FALSE,L"无法获取收起窗口的屏幕工作区。");
+    int width=(std::min)(cp(bar?720:304),static_cast<int>(info.rcWork.right-info.rcWork.left)-cp(16));
+    int height=cp(bar && width>=cp(480)?46:66);
+    int x=bar?info.rcWork.left+(info.rcWork.right-info.rcWork.left-width)/2:state.capsuleX;
+    int y=bar?info.rcWork.top+cp(6):state.capsuleY;
+    if(!bar && state.capsuleX==-1 && state.capsuleY==-1) {
+        RECT main{};GetWindowRect(mainWindow,&main);x=IsIconic(mainWindow)?info.rcWork.right-width-cp(20):main.left;y=IsIconic(mainWindow)?info.rcWork.top+cp(60):main.top;
     }
-    if (changed) updateTray();
+    x=std::clamp(x,static_cast<int>(info.rcWork.left),(std::max)(static_cast<int>(info.rcWork.left),static_cast<int>(info.rcWork.right)-width));
+    y=std::clamp(y,static_cast<int>(info.rcWork.top),(std::max)(static_cast<int>(info.rcWork.top),static_cast<int>(info.rcWork.bottom)-height));
+    RECT current{};GetWindowRect(compactWindow,&current);
+    bool topmost=(GetWindowLongPtrW(compactWindow,GWL_EXSTYLE)&WS_EX_TOPMOST)!=0;
+    if(current.left!=x || current.top!=y || current.right-current.left!=width || current.bottom-current.top!=height || topmost!=state.topmost)
+        SetWindowPos(compactWindow,state.topmost?HWND_TOPMOST:HWND_NOTOPMOST,x,y,width,height,SWP_NOACTIVATE);
+    MoveWindow(compactExpand,width-cp(82),cp(9),cp(44),cp(28),TRUE);
+    MoveWindow(compactMenu,width-cp(34),cp(9),cp(24),cp(28),TRUE);
+    if(!bar){state.capsuleX=x;state.capsuleY=y;}
+}
+
+void drawCompact(HWND window,HDC target) {
+    RECT rect{};GetClientRect(window,&rect);
+    HDC dc=CreateCompatibleDC(target);HBITMAP bitmap=CreateCompatibleBitmap(target,rect.right,rect.bottom);auto old=SelectObject(dc,bitmap);
+    fill(dc,rect,Paper);
+    auto brush=CreateSolidBrush(Surface);auto pen=CreatePen(PS_SOLID,1,Border);auto oldBrush=SelectObject(dc,brush),oldPen=SelectObject(dc,pen);
+    RoundRect(dc,0,0,rect.right,rect.bottom,cp(24),cp(24));SelectObject(dc,oldBrush);SelectObject(dc,oldPen);DeleteObject(brush);DeleteObject(pen);
+    auto info=state.compactInfo(nowSeconds());
+    if(state.collapseMode==CollapseMode::TopBar && rect.right>=cp(480)) {
+        label(dc,info.tasks,{cp(16),0,cp(114),rect.bottom},compactFont,Ink);
+        label(dc,info.timer,{cp(120),0,cp(258),rect.bottom},compactFont,state.pomodoro.running?Green:Muted);
+        label(dc,info.schedule,{cp(268),0,rect.right-cp(94),rect.bottom},compactSmallFont,Muted);
+    } else {
+        label(dc,info.tasks,{cp(16),cp(9),cp(102),cp(30)},compactFont,Ink);
+        label(dc,info.timer,{cp(106),cp(9),rect.right-cp(88),cp(30)},compactSmallFont,state.pomodoro.running?Green:Muted);
+        label(dc,info.schedule,{cp(16),cp(34),rect.right-cp(16),cp(55)},compactSmallFont,Muted);
+    }
+    BitBlt(target,0,0,rect.right,rect.bottom,dc,0,0,SRCCOPY);SelectObject(dc,old);DeleteObject(bitmap);DeleteDC(dc);
+}
+
+LRESULT CALLBACK compactProc(HWND window,UINT message,WPARAM wParam,LPARAM lParam) {
+    switch(message) {
+    case WM_CREATE:
+        compactWindow=window;compactDpi=static_cast<int>(GetDpiForWindow(window));compactFonts();
+        compactExpand=child(L"BUTTON",L"展开",WS_TABSTOP,window,ExpandId);
+        compactMenu=child(L"BUTTON",L"⋯",WS_TABSTOP,window,CompactMenuId);
+        SetWindowTextW(compactMenu,L"菜单");
+        compactTooltip=CreateWindowExW(WS_EX_TOPMOST,TOOLTIPS_CLASSW,nullptr,WS_POPUP|TTS_ALWAYSTIP|TTS_NOPREFIX,0,0,0,0,window,nullptr,instance,nullptr);
+        require(compactTooltip!=nullptr,L"无法创建收起信息提示。");
+        { TOOLINFOW tool{sizeof(tool)};tool.uFlags=TTF_IDISHWND|TTF_SUBCLASS;tool.hwnd=window;tool.uId=reinterpret_cast<UINT_PTR>(window);tool.lpszText=const_cast<wchar_t*>(L"浮光待办");SendMessageW(compactTooltip,TTM_ADDTOOLW,0,reinterpret_cast<LPARAM>(&tool)); }
+        SendMessageW(compactTooltip,TTM_SETMAXTIPWIDTH,0,cp(420));return 0;
+    case WM_COMMAND:
+        if(LOWORD(wParam)==ExpandId)PostMessageW(mainWindow,ShowRequest,0,0);
+        if(LOWORD(wParam)==CompactMenuId)menu(window);
+        return 0;
+    case WM_CONTEXTMENU:menu(window);return 0;
+    case WM_LBUTTONDBLCLK:PostMessageW(mainWindow,ShowRequest,0,0);return 0;
+    case WM_LBUTTONDOWN:
+        if(state.collapseMode==CollapseMode::Capsule){POINT point{};GetCursorPos(&point);SendMessageW(window,WM_NCLBUTTONDOWN,HTCAPTION,MAKELPARAM(point.x,point.y));}
+        return 0;
+    case WM_NCLBUTTONDBLCLK:PostMessageW(mainWindow,ShowRequest,0,0);return 0;
+    case WM_EXITSIZEMOVE: {
+        RECT rect{};GetWindowRect(window,&rect);state.capsuleX=rect.left;state.capsuleY=rect.top;positionCompact();save();return 0;
+    }
+    case WM_DPICHANGED:compactDpi=HIWORD(wParam);compactFonts();positionCompact();return 0;
+    case WM_DISPLAYCHANGE:case WM_SETTINGCHANGE:positionCompact();return 0;
+    case WM_SIZE: {
+        RECT rect{};GetClientRect(window,&rect);HRGN region=CreateRoundRectRgn(0,0,rect.right+1,rect.bottom+1,cp(24),cp(24));
+        require(region && SetWindowRgn(window,region,TRUE)!=0,L"无法设置收起窗口形状。");return 0;
+    }
+    case WM_DRAWITEM: {
+        auto item=reinterpret_cast<DRAWITEMSTRUCT*>(lParam);fill(item->hDC,item->rcItem,Surface);
+        label(item->hDC,item->CtlID==ExpandId?L"展开":L"···",item->rcItem,compactSmallFont,item->itemState&ODS_SELECTED?Ink:Green,DT_CENTER|DT_VCENTER|DT_SINGLELINE);
+        if(item->itemState&ODS_FOCUS){RECT focus=item->rcItem;InflateRect(&focus,-cp(2),-cp(2));DrawFocusRect(item->hDC,&focus);}return TRUE;
+    }
+    case WM_PAINT:{PAINTSTRUCT paint{};auto dc=BeginPaint(window,&paint);drawCompact(window,dc);EndPaint(window,&paint);return 0;}
+    case WM_PRINTCLIENT:drawCompact(window,reinterpret_cast<HDC>(wParam));return 0;
+    case WM_ERASEBKGND:return 1;
+    case WM_CLOSE:PostMessageW(mainWindow,ShowRequest,0,0);return 0;
+    case WM_DESTROY:
+        for(auto font:{compactFont,compactSmallFont})if(font)DeleteObject(font);
+        compactFont=nullptr;compactSmallFont=nullptr;compactWindow=nullptr;compactTooltip=nullptr;return 0;
+    }
+    return DefWindowProcW(window,message,wParam,lParam);
+}
+
+void refreshCompact() {
+    auto info=state.compactInfo(nowSeconds());
+    if(compactWindow && compactDetails!=info.details) {
+        compactDetails=info.details;SetWindowTextW(compactWindow,compactDetails.c_str());
+        TOOLINFOW tool{sizeof(tool)};tool.uFlags=TTF_IDISHWND|TTF_SUBCLASS;tool.hwnd=compactWindow;tool.uId=reinterpret_cast<UINT_PTR>(compactWindow);tool.lpszText=compactDetails.data();
+        SendMessageW(compactTooltip,TTM_UPDATETIPTEXTW,0,reinterpret_cast<LPARAM>(&tool));InvalidateRect(compactWindow,nullptr,FALSE);
+    }
+    auto title=manuallyHidden && state.collapseMode==CollapseMode::Taskbar?L"浮光 · "+info.tasks+L" · "+info.timer+L" · "+info.schedule:L"浮光待办";
+    if(textOf(mainWindow)!=title)SetWindowTextW(mainWindow,title.c_str());
+    updateTray();
+}
+
+void applyVisibility() {
+    if(!ready || applyingVisibility)return;
+    applyingVisibility=true;
+    bool compact=manuallyHidden && !automaticallyHidden && (state.collapseMode==CollapseMode::Capsule || state.collapseMode==CollapseMode::TopBar);
+    bool taskbar=manuallyHidden && !automaticallyHidden && state.collapseMode==CollapseMode::Taskbar;
+    if(automaticallyHidden || manuallyHidden) {
+        for(auto window:{fileDialog,settingsWindow,scheduleWindow})if(window && IsWindowVisible(window))ShowWindow(window,SW_HIDE);
+        if(taskbar) {
+            if(followCurrentDesktop({mainWindow}) && (!IsWindowVisible(mainWindow) || !IsIconic(mainWindow)))ShowWindow(mainWindow,SW_SHOWMINNOACTIVE);
+        } else if(IsWindowVisible(mainWindow))ShowWindow(mainWindow,SW_HIDE);
+    } else if(followCurrentDesktop({mainWindow,settingsWindow,fileDialog,scheduleWindow})) {
+        if(!IsWindowVisible(mainWindow) || IsIconic(mainWindow))ShowWindow(mainWindow,SW_SHOWNOACTIVATE);
+        for(auto window:{settingsWindow,fileDialog,scheduleWindow})if(window && !IsWindowVisible(window))ShowWindow(window,SW_SHOWNOACTIVATE);
+    }
+    if(compact) {
+        positionCompact();
+        if(followCurrentDesktop({compactWindow}) && !IsWindowVisible(compactWindow))ShowWindow(compactWindow,SW_SHOWNOACTIVATE);
+    } else if(compactWindow && IsWindowVisible(compactWindow)) {
+        SendMessageW(compactTooltip,TTM_POP,0,0);ShowWindow(compactWindow,SW_HIDE);
+    }
+    refreshCompact();applyingVisibility=false;
+}
+
+void evaluateForeground() {
+    if(!ready)return;
+    HWND foreground=GetForegroundWindow();DWORD cloaked=0;
+    if(!state.automatic)automaticallyHidden=false;
+    // 焦点切换期间保留自动隐藏状态，手动收起仍然立即生效。
+    if(foreground && isOnCurrentDesktop(foreground) && !(SUCCEEDED(DwmGetWindowAttribute(foreground,DWMWA_CLOAKED,&cloaked,sizeof(cloaked))) && cloaked))
+        automaticallyHidden=state.matches(foregroundExe(foreground));
+    applyVisibility();
 }
 
 void CALLBACK foregroundEvent(HWINEVENTHOOK, DWORD, HWND, LONG, LONG, DWORD, DWORD) {
@@ -626,16 +755,22 @@ void CALLBACK foregroundEvent(HWINEVENTHOOK, DWORD, HWND, LONG, LONG, DWORD, DWO
 }
 
 void CALLBACK desktopEvent(HWINEVENTHOOK, DWORD, HWND window, LONG, LONG, DWORD, DWORD) {
-    if (window == mainWindow) PostMessageW(mainWindow, ForegroundMessage, 0, 0);
+    if (window == mainWindow || window == compactWindow) PostMessageW(mainWindow, ForegroundMessage, 0, 0);
 }
 
 void updateTray() {
-    auto hint = automaticallyHidden ? L"浮光待办 · 已随前台软件隐藏" : manuallyHidden ? L"浮光待办 · 已收起" : L"浮光待办 · 双击显示";
-    lstrcpynW(tray.szTip, hint, static_cast<int>(std::size(tray.szTip)));
+    auto info=state.compactInfo(nowSeconds());
+    std::wstring hint=automaticallyHidden?L"浮光 · 自动隐藏":manuallyHidden?std::wstring(L"浮光 · ")+CollapseNames[static_cast<int>(state.collapseMode)]:L"浮光待办";
+    hint+=L"\n"+info.details;
+    hint.resize((std::min)(hint.size(),std::size(tray.szTip)-1));
+    if(lastTrayTip==hint)return;
+    lastTrayTip=hint;
+    lstrcpynW(tray.szTip,hint.c_str(),static_cast<int>(std::size(tray.szTip)));
     Shell_NotifyIconW(NIM_MODIFY, &tray);
 }
 
 void addTray() {
+    lastTrayTip.clear();
     tray.cbSize = sizeof(tray); tray.hWnd = mainWindow; tray.uID = 1;
     tray.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP; tray.uCallbackMessage = TrayMessage; tray.hIcon = appIcon;
     lstrcpyW(tray.szTip, L"浮光待办");
@@ -698,16 +833,20 @@ UINT_PTR CALLBACK fileDialogProc(HWND window, UINT message, WPARAM, LPARAM) {
 
 void menu(HWND owner) {
     HMENU popup = CreatePopupMenu();
-    AppendMenuW(popup, MF_STRING, MenuShow, manuallyHidden ? L"显示待办" : L"收起到托盘");
+    AppendMenuW(popup, MF_STRING, MenuShow, manuallyHidden ? L"展开完整窗口" : L"收起窗口");
+    HMENU modes=CreatePopupMenu();
+    for(int i=0;i<4;++i)AppendMenuW(modes,MF_STRING|(static_cast<int>(state.collapseMode)==i?MF_CHECKED:0),CollapseFirstId+i,CollapseNames[i]);
+    AppendMenuW(popup,MF_POPUP,reinterpret_cast<UINT_PTR>(modes),L"收起模式");
     AppendMenuW(popup, MF_STRING | (state.automatic ? MF_CHECKED : 0), MenuAuto, L"自动隐藏");
     AppendMenuW(popup, MF_STRING | (state.topmost ? MF_CHECKED : 0), MenuTop, L"保持置顶");
-    AppendMenuW(popup, MF_STRING, MenuSettings, L"软件检测设置…");
+    AppendMenuW(popup, MF_STRING, MenuSettings, L"设置…");
     AppendMenuW(popup, MF_STRING, MenuClear, L"清理已完成待办");
     AppendMenuW(popup, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(popup, MF_STRING, MenuExit, L"退出浮光待办");
     POINT point{}; GetCursorPos(&point); SetForegroundWindow(owner);
-    TrackPopupMenu(popup, TPM_RIGHTBUTTON, point.x, point.y, 0, owner, nullptr);
+    int selected=TrackPopupMenu(popup, TPM_RIGHTBUTTON|TPM_RETURNCMD, point.x, point.y, 0, owner, nullptr);
     PostMessageW(owner, WM_NULL, 0, 0); DestroyMenu(popup);
+    if(selected)command(selected);
 }
 
 LRESULT CALLBACK settingsProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
@@ -745,10 +884,15 @@ LRESULT CALLBACK settingsProc(HWND window, UINT message, WPARAM wParam, LPARAM l
         MoveWindow(themeChoice,px(88),px(418),px(230),px(130),TRUE);
         for(auto text:{L"晨光 · 浅色",L"夜色 · 深色",L"森林 · 绿色"})SendMessageW(themeChoice,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(text));
         SendMessageW(themeChoice,CB_SETCURSEL,state.theme,0);
+        auto collapseLabel=child(L"STATIC",L"收起模式",0,window,-1);MoveWindow(collapseLabel,px(14),px(460),px(68),px(26),TRUE);
+        collapseChoice=child(L"COMBOBOX",L"收起模式",WS_TABSTOP|CBS_DROPDOWNLIST,window,CollapseChoiceId);
+        MoveWindow(collapseChoice,px(88),px(458),px(230),px(140),TRUE);
+        for(auto name:CollapseNames)SendMessageW(collapseChoice,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(name));
+        SendMessageW(collapseChoice,CB_SETCURSEL,static_cast<int>(state.collapseMode),0);
         updateLabel=child(L"STATIC",L"",0,window,-1);
-        MoveWindow(updateLabel,px(14),px(468),px(290),px(42),TRUE);
+        MoveWindow(updateLabel,px(14),px(508),px(290),px(42),TRUE);
         updateButton=child(L"BUTTON",L"检查更新",WS_TABSTOP,window,UpdateId);
-        MoveWindow(updateButton,px(316),px(468),px(110),px(30),TRUE);
+        MoveWindow(updateButton,px(316),px(508),px(110),px(30),TRUE);
         refreshUpdate();
         refreshRules(); return 0;
     }
@@ -761,6 +905,7 @@ LRESULT CALLBACK settingsProc(HWND window, UINT message, WPARAM wParam, LPARAM l
     case WM_COMMAND:
         switch (LOWORD(wParam)) {
         case ThemeChoiceId: if(HIWORD(wParam)==CBN_SELCHANGE){state.theme=static_cast<int>(SendMessageW(themeChoice,CB_GETCURSEL,0,0));save();applyTheme();}break;
+        case CollapseChoiceId: if(HIWORD(wParam)==CBN_SELCHANGE){state.collapseMode=static_cast<CollapseMode>(SendMessageW(collapseChoice,CB_GETCURSEL,0,0));save();}break;
         case UpdateId: updateAction(); break;
         case AutoId: state.automatic=Button_GetCheck(automaticBox)==BST_CHECKED; save(); evaluateForeground(); InvalidateRect(mainWindow,nullptr,FALSE); break;
         case TopId: state.topmost=Button_GetCheck(topmostBox)==BST_CHECKED; SetWindowPos(mainWindow,state.topmost?HWND_TOPMOST:HWND_NOTOPMOST,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE); save(); break;
@@ -792,17 +937,18 @@ LRESULT CALLBACK settingsProc(HWND window, UINT message, WPARAM wParam, LPARAM l
     }
     case WM_ERASEBKGND: { RECT rect{}; GetClientRect(window,&rect); FillRect(reinterpret_cast<HDC>(wParam),&rect,paperBrush); return 1; }
     case WM_CLOSE: DestroyWindow(window); return 0;
-    case WM_DESTROY: settingsWindow=nullptr; rulesList=nullptr; ruleInput=nullptr;themeChoice=nullptr; return 0;
+    case WM_DESTROY: settingsWindow=nullptr; rulesList=nullptr; ruleInput=nullptr;themeChoice=nullptr;collapseChoice=nullptr; return 0;
     }
     return DefWindowProcW(window,message,wParam,lParam);
 }
 
 void openSettings() {
+    if(manuallyHidden){manuallyHidden=false;applyVisibility();}
     if (settingsWindow) { ShowWindow(settingsWindow,SW_SHOWNORMAL); SetForegroundWindow(settingsWindow); return; }
     RECT owner{}; GetWindowRect(mainWindow,&owner);
-    RECT rect{0,0,px(440),px(520)};
+    RECT rect{0,0,px(440),px(560)};
     AdjustWindowRectExForDpi(&rect,WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU,FALSE,WS_EX_TOOLWINDOW,dpi);
-    settingsWindow=CreateWindowExW(WS_EX_TOOLWINDOW,L"FloatingTodoSettings",L"浮光待办 · 自动隐藏设置",WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU,
+    settingsWindow=CreateWindowExW(WS_EX_TOOLWINDOW,L"FloatingTodoSettings",L"浮光待办 · 设置",WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU,
         owner.left-px(80),owner.top+px(16),rect.right-rect.left,rect.bottom-rect.top,mainWindow,nullptr,instance,nullptr);
     require(settingsWindow!=nullptr,L"无法打开设置。");
     applyTheme();
@@ -816,6 +962,11 @@ void openSettings() {
 
 void command(int id) {
     if(id>=ViewFirstId&&id<ViewFirstId+3){selectView(id-ViewFirstId);return;}
+    if(id>=CollapseFirstId&&id<CollapseFirstId+4) {
+        state.collapseMode=static_cast<CollapseMode>(id-CollapseFirstId);manuallyHidden=true;save();evaluateForeground();
+        if(collapseChoice)SendMessageW(collapseChoice,CB_SETCURSEL,static_cast<int>(state.collapseMode),0);
+        return;
+    }
     switch(id) {
     case ThemeId:chooseTheme();break;
     case PomoStartId: state.pomodoro.toggle(nowSeconds());save();refreshPomodoro();break;
@@ -856,8 +1007,18 @@ LRESULT CALLBACK mainProc(HWND window,UINT message,WPARAM wParam,LPARAM lParam) 
         SendMessageW(scheduleList,LB_SETITEMHEIGHT,0,px(58)); SetWindowSubclass(scheduleList,listProc,2,0);
         scheduleAdd=child(L"BUTTON",L"＋ 新增日程",WS_TABSTOP,window,ScheduleAddId);
         createPomodoro();cancelEdit(); refreshTasks(); refreshSchedules(); selectView(0);themeWindow(mainWindow); return 0;
-    case WM_SIZE: if(taskList)layout(); return 0;
+    case WM_SIZE:
+        if(wParam!=SIZE_MINIMIZED && taskList) {
+            if(!applyingVisibility && manuallyHidden && state.collapseMode==CollapseMode::Taskbar){manuallyHidden=false;applyVisibility();}
+            layout();
+        }
+        return 0;
+    case WM_SYSCOMMAND:
+        if((wParam&0xFFF0)==SC_MINIMIZE){manuallyHidden=true;evaluateForeground();return 0;}
+        if((wParam&0xFFF0)==SC_RESTORE && manuallyHidden){manuallyHidden=false;applyVisibility();return 0;}
+        break;
     case WM_EXITSIZEMOVE: {
+        if(IsIconic(window))return 0;
         RECT bounds{}; GetWindowRect(window,&bounds); state.x=bounds.left;state.y=bounds.top;
         state.width=dip(bounds.right-bounds.left);state.height=dip(bounds.bottom-bounds.top);save(); return 0;
     }
@@ -893,11 +1054,17 @@ LRESULT CALLBACK mainProc(HWND window,UINT message,WPARAM wParam,LPARAM lParam) 
         if(LOWORD(wParam)==ScheduleListId && HIWORD(wParam)==LBN_DBLCLK) {
             int selected=static_cast<int>(SendMessageW(scheduleList,LB_GETCURSEL,0,0));
             if(selected>=0 && selected<static_cast<int>(state.schedules.size()))openSchedule(state.schedules[selected].id);
-        } else if(LOWORD(wParam)==ListId && HIWORD(wParam)==LBN_DBLCLK)editSelected();else command(LOWORD(wParam));return 0;
+        } else if(LOWORD(wParam)==ListId && HIWORD(wParam)==LBN_DBLCLK) {
+            editSelected();
+        } else {
+            command(LOWORD(wParam));
+        }
+        return 0;
     case WM_CONTEXTMENU:menu(window);return 0;
+    case WM_DISPLAYCHANGE:case WM_SETTINGCHANGE:positionCompact();return 0;
     case ForegroundMessage:evaluateForeground();return 0;
     case ShowRequest:manuallyHidden=false;evaluateForeground();updateTray();return 0;
-    case WM_TIMER:if(wParam==2){animateView();return 0;}evaluateForeground();refreshUpdate();pomodoroTick();scheduleNotices();return 0;
+    case WM_TIMER:if(wParam==2){animateView();return 0;}pomodoroTick();evaluateForeground();refreshUpdate();scheduleNotices();return 0;
     case TrayMessage:
         if(lParam==WM_LBUTTONDBLCLK) {manuallyHidden=false;evaluateForeground();updateTray();}
         if(lParam==WM_RBUTTONUP)menu(window);
@@ -905,6 +1072,7 @@ LRESULT CALLBACK mainProc(HWND window,UINT message,WPARAM wParam,LPARAM lParam) 
     case WM_QUERYENDSESSION:save();return TRUE;
     case WM_CLOSE:manuallyHidden=true;evaluateForeground();updateTray();return 0;
     case WM_DESTROY:
+        if(compactWindow)DestroyWindow(compactWindow);
         ready=false;KillTimer(window,1);KillTimer(window,2);if(foregroundHook)UnhookWinEvent(foregroundHook);if(desktopHook)UnhookWinEvent(desktopHook);Shell_NotifyIconW(NIM_DELETE,&tray);PostQuitMessage(0);return 0;
     }
     return DefWindowProcW(window,message,wParam,lParam);
@@ -948,6 +1116,8 @@ int WINAPI wWinMain(HINSTANCE app,HINSTANCE,LPWSTR,int) {
     require(RegisterClassExW(&klass)!=0,L"无法注册设置窗口。");
     klass.lpfnWndProc=scheduleProc;klass.lpszClassName=L"FloatingTodoSchedule";
     require(RegisterClassExW(&klass)!=0,L"无法注册日程编辑器。");
+    klass.lpfnWndProc=compactProc;klass.lpszClassName=L"FloatingTodoCompact";klass.hbrBackground=nullptr;klass.style=CS_DBLCLKS;
+    require(RegisterClassExW(&klass)!=0,L"无法注册收起窗口。");
     RECT work{};SystemParametersInfoW(SPI_GETWORKAREA,0,&work,0);
     int width=px(state.width),height=px(state.height);
     RECT desired{state.x,state.y,state.x+width,state.y+height};
@@ -959,6 +1129,7 @@ int WINAPI wWinMain(HINSTANCE app,HINSTANCE,LPWSTR,int) {
     require(mainWindow!=nullptr,L"无法创建待办窗口。");
     SetWindowPos(mainWindow,nullptr,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE|SWP_FRAMECHANGED);
     int corner=2;DwmSetWindowAttribute(mainWindow,33,&corner,sizeof(corner));
+    require(CreateWindowExW(WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE,L"FloatingTodoCompact",L"浮光待办 · 收起",WS_POPUP|WS_CLIPCHILDREN,x,y,cp(304),cp(66),nullptr,nullptr,instance,nullptr)!=nullptr,L"无法创建收起窗口。");
     taskbarCreated=RegisterWindowMessageW(L"TaskbarCreated");addTray();
     foregroundHook=SetWinEventHook(EVENT_SYSTEM_FOREGROUND,EVENT_SYSTEM_FOREGROUND,nullptr,foregroundEvent,0,0,WINEVENT_OUTOFCONTEXT);
     require(foregroundHook!=nullptr,L"无法启用前台软件检测。");
