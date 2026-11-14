@@ -13,7 +13,7 @@ const shots = [...document.querySelectorAll(".shot")];
 const duration = 36;
 const paper = "#efefeb";
 const blue = "#3455ee";
-const assets = Object.fromEntries(["tasks","completed","schedule","focus","running-0","running-1","running-2","running-3","capsule","taskbar"].map(name => {
+const assets = Object.fromEntries(["tasks","completed","schedule","running-0","running-1","running-2","running-3","capsule","capsule-light","capsule-forest","topbar","taskbar"].map(name => {
   const image = new Image();
   image.src = "assets/" + name + ".png";
   return [name, image];
@@ -80,39 +80,39 @@ function setImage(element, name) {
 }
 
 function showWork(t) {
-  const schedule = t >= 10;
-  const local = t - (schedule ? 10 : 4);
+  const schedule = t >= 6.5;
+  const local = t - (schedule ? 6.5 : 4);
   background(schedule ? "#e5eafa" : "#f7f7f3");
   ctx.fillStyle = schedule ? "#ced9fa" : "#e8eafa";
   ctx.beginPath();
   ctx.arc(1550, 890, 705 + 25*ease(local/3), 0, 2*Math.PI);
   ctx.fill();
-  byId("work-title").textContent = schedule ? "把时间\n也记下来。" : "一件待办，\n一次勾选。";
-  byId("work-caption").textContent = schedule ? "每天 16:00，提醒下午看片。" : "按下 Enter 保存，点击方框完成。";
-  setImage(byId("work-image"), schedule ? "schedule" : t < 7 ? "tasks" : "completed");
+  byId("work-title").textContent = schedule ? "到点提醒。" : "记下，勾选。";
+  byId("work-caption").textContent = schedule ? "日程支持每天或每周重复。" : "回车添加待办，勾选即可完成。";
+  setImage(byId("work-image"), schedule ? "schedule" : t < 5.5 ? "tasks" : "completed");
   const window = byId("native");
   const enter = ease(local / 0.55);
-  const inspect = schedule ? 0 : smooth((t-5.5)/0.75)*(1-smooth((t-8.25)/0.75));
+  const inspect = schedule ? 0 : smooth((t-4.75)/0.5)*(1-smooth((t-6)/0.5));
   window.style.transform = "translate(" + (1-enter)*22 + "%,-50%) scale(" + (0.96+0.04*enter+inspect*0.19) + ")";
   window.style.opacity = enter;
   byId("work").querySelector(".shot-copy").style.opacity = clamp(local/0.16);
   const ring = byId("tap");
-  const ripple = clamp((t-7)/0.5);
-  ring.style.opacity = t >= 7 && t < 7.5 ? 1-ripple : 0;
+  const ripple = clamp((t-5.5)/0.5);
+  ring.style.opacity = t >= 5.5 && t < 6 ? 1-ripple : 0;
   ring.style.transform = "translate(-50%,-50%) scale(" + (0.35+ripple) + ")";
 }
 
 function showFocus(t) {
   background("#171a23");
-  const enter = ease((t-14)/0.55);
-  const reveal = ease((t-15)/0.8);
+  const enter = ease((t-8)/0.45);
+  const reveal = enter;
   ctx.save();
   ctx.strokeStyle = "#34394b";
   ctx.lineWidth = 2;
   for (let i=0; i<60; i++) {
     const angle = (i-15)*Math.PI/30;
     const x = Math.cos(angle), y = Math.sin(angle);
-    ctx.strokeStyle = i < Math.floor((t-14)*2) ? "#9aaaff" : "#34394b";
+    ctx.strokeStyle = i < Math.floor((t-8)*2) ? "#9aaaff" : "#34394b";
     ctx.beginPath();
     ctx.moveTo(1165+x*371,448+y*371);
     ctx.lineTo(1165+x*(i%5===0?340:356),448+y*(i%5===0?340:356));
@@ -121,52 +121,65 @@ function showFocus(t) {
   ctx.restore();
   byId("focus-type").style.transform = "translate(" + (1-enter)*12 + "%,-50%)";
   const image = document.querySelector(".native-focus");
-  const elapsed = Math.max(0, Math.floor(t-16));
+  const elapsed = Math.floor(t-8);
   const remaining = 1500-elapsed;
   byId("minutes").textContent = Math.floor(remaining/60);
   byId("seconds").textContent = String(remaining%60).padStart(2,"0");
-  setImage(image, t < 16 ? "focus" : "running-" + elapsed);
+  setImage(image, "running-" + elapsed);
   image.style.transform = "translateY(" + (-42-8*reveal) + "%) scale(" + (0.95+reveal*0.05) + ")";
   image.style.opacity = reveal;
 }
 
+const compactFrames = [
+  { at: 12, image: "capsule-light", title: "把待办收成胶囊。", caption: "晨光 · 浅色", background: "#efefeb", x: 50, y: 65, width: 44 },
+  { at: 13, image: "capsule", title: "把待办收成胶囊。", caption: "夜色 · 深色", background: "#e5e7ef", x: 50, y: 65, width: 44 },
+  { at: 14, image: "capsule-forest", title: "把待办收成胶囊。", caption: "森林 · 绿色", background: "#e7eee7", x: 50, y: 65, width: 44 },
+  { at: 15, image: "topbar", title: "贴在屏幕顶部。", caption: "待办、倒计时和最近日程，排成一行。", background: "#e7eee7", x: 50, y: 10, width: 82 },
+  { at: 17, image: "taskbar", title: "移进任务栏。", caption: "点击进度面板，即可展开待办。", background: "#e7eaf7", x: 20, y: 84, width: 21 },
+  { at: 18.5, image: "taskbar", title: "完全隐藏。", caption: "双击托盘图标，随时展开。", background: "#efefeb", x: 89, y: 84, width: 2 }
+];
+
 function showCompact(t) {
-  background("#e7eaf7");
-  const morph = smooth((t-22.5)/0.5);
-  const dock = byId("bar-line");
-  dock.style.opacity = morph;
+  const index = compactFrames.findLastIndex(frame => t >= frame.at);
+  const current = compactFrames[index];
+  const previous = compactFrames[Math.max(0,index-1)];
+  const progress = smooth((t-current.at)/0.4);
+  const blend = (from,to) => from + (to-from)*progress;
+  const hidden = current.at === 18.5;
+  background(current.background);
+  byId("bar-line").style.opacity = clamp((t-17)/0.4);
+  byId("tray-mark").style.opacity = hidden ? progress : 0;
   const mini = byId("miniature");
-  setImage(byId("compact-image"), morph < 0.5 ? "capsule" : "taskbar");
-  byId("compact-title").textContent = morph < 0.5 ? "收成一枚胶囊。" : "也能放进任务栏。";
-  mini.style.width = (48-27*morph) + "%";
-  mini.style.left = (50-30*morph) + "%";
-  mini.style.top = (64+20*morph) + "%";
-  const enter = ease((t-20)/0.6);
+  setImage(byId("compact-image"), progress < 0.5 ? previous.image : current.image);
+  byId("compact-title").textContent = current.title;
+  byId("compact-caption").textContent = current.caption;
+  byId("compact").querySelector(".center-copy").style.top = (current.image === "topbar" ? 41 : 20) + "%";
+  mini.style.width = blend(previous.width,current.width) + "%";
+  mini.style.left = blend(previous.x,current.x) + "%";
+  mini.style.top = blend(previous.y,current.y) + "%";
+  const enter = ease((t-12)/0.4);
   mini.style.transform = "translate(-50%,-50%) scale(" + (1.32-0.32*enter) + ")";
-  mini.style.opacity = enter;
+  mini.style.opacity = hidden ? 1-progress : enter;
+}
+
+function showPerformance(t) {
+  background("#edf1f8");
+  const enter = ease((t-20)/0.45);
+  const layout = document.querySelector(".perf-layout");
+  layout.style.opacity = enter;
+  layout.style.transform = "translateY(" + (1-enter)*4 + "%)";
 }
 
 function showQuiet(t) {
-  const enter = smooth((t-25.85)/0.65);
-  const leave = smooth((t-28.75)/0.55);
+  const enter = smooth((t-25.5)/0.5);
+  const leave = smooth((t-29)/0.5);
   const game = enter * (1-leave);
   background("#eeefeb");
-  if (game > 0) {
-    ctx.save();
-    ctx.beginPath(); ctx.rect(1600*(1-game),0,1600,900); ctx.clip();
-    background("#1d2d8c");
-    // 几何山体标示前台场景，窗口在切换时退出画面。
-    for (const [y, color, shift] of [[520,"#3b55cd",0],[685,"#627bf2",200],[830,"#a0b0ff",100]]) {
-      ctx.fillStyle=color;
-      ctx.beginPath(); ctx.moveTo(0,900); ctx.lineTo(0,y+200);
-      ctx.lineTo(950+shift-22*(t-26),y-125); ctx.lineTo(1150+shift,y-32); ctx.lineTo(1600,y-220);
-      ctx.lineTo(1600,900); ctx.fill();
-    }
-    ctx.restore();
-  }
+  byId("game-menu").style.opacity = game;
+  byId("game-shade").style.opacity = game;
   const back = t >= 29;
-  byId("quiet-title").textContent = back ? "回到桌面。" : "游戏开始。";
-  byId("quiet-caption").textContent = back ? "待办自动恢复，继续刚才的进度。" : "指定游戏进入前台，窗口自动隐藏。";
+  byId("quiet-title").textContent = back ? "回到桌面。" : "打开 CS2。";
+  byId("quiet-caption").textContent = back ? "待办自动恢复，继续刚才的进度。" : "游戏进入前台，待办自动隐藏。";
   byId("quiet").style.color = game > 0.65 ? "#ffffff" : "#191a1d";
   const image = byId("quiet-window");
   image.style.opacity = 1-game;
@@ -181,12 +194,14 @@ function render(t) {
     showShot("intro"); background(paper); introArt(t);
     byId("cover-action").style.visibility = audio.paused && t < 0.1 ? "visible" : "hidden";
     byId("intro").style.opacity = 1-smooth((t-2.75)/0.65);
-  } else if (t < 14) {
+  } else if (t < 8) {
     showShot("work"); showWork(t);
-  } else if (t < 20) {
+  } else if (t < 12) {
     showShot("focus"); showFocus(t);
-  } else if (t < 25) {
+  } else if (t < 20) {
     showShot("compact"); showCompact(t);
+  } else if (t < 25) {
+    showShot("performance"); showPerformance(t);
   } else if (t < 32) {
     showShot("quiet"); showQuiet(t);
   } else {

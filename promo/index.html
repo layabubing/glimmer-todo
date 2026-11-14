@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#fafaf9">
-  <title>浮光待办 · 产品短片</title>
+  <title>下一代轻量级桌面待办工具 · 浮光待办</title>
   <link rel="stylesheet" href="film.css">
   <script src="film.js" defer></script>
 </head>
@@ -20,9 +20,8 @@
         <canvas id="art" aria-hidden="true"></canvas>
         <section class="shot" id="intro">
           <div class="intro-copy">
-            <div class="film-name">Glimmer Todo</div>
-            <h1>浮光待办<span class="title-dot">.</span></h1>
-            <p>记下待办，给桌面留白。</p>
+            <div class="film-name">浮光待办 · Glimmer Todo</div>
+            <h1>下一代轻量级<br>桌面待办工具</h1>
             <div id="cover-action"><button id="watch"><i class="triangle"></i>播放短片</button><span class="mono">00:36</span></div>
           </div>
         </section>
@@ -35,12 +34,21 @@
           <img class="native-focus" src="assets/focus.png" alt="原生专注页面">
         </section>
         <section class="shot" id="compact" hidden>
-          <div class="center-copy"><div class="film-name">收起模式</div><h2 id="compact-title">收成一枚胶囊。</h2></div>
+          <div class="center-copy"><div class="film-name">收起模式</div><h2 id="compact-title">把待办收成胶囊。</h2><p id="compact-caption"></p></div>
           <div id="miniature"><img id="compact-image" src="assets/capsule.png" alt="收起后的进度与最近日程"></div>
-          <div id="bar-line" aria-hidden="true"><i class="windows"></i></div>
+          <div id="bar-line" aria-hidden="true"><i class="windows"></i><i id="tray-mark" class="app-mark"></i></div>
+        </section>
+        <section class="shot" id="performance" hidden>
+          <div class="perf-layout">
+            <div class="perf-number"><div class="film-name">采样最大工作集</div><div class="metric">25.84 <small>MB</small></div></div>
+            <div class="perf-copy"><h2>原生窗口，<br>轻量常驻。</h2><p>C++ 直接绘制 Windows 界面。<br>重复启动时，复用已有进程。</p></div>
+            <p class="sample-note">浮光待办进程 · 本机采样 60.45 秒 · 118 次</p>
+          </div>
         </section>
         <section class="shot" id="quiet" hidden>
-          <div class="shot-copy"><div class="film-name">自动隐藏</div><h2 id="quiet-title">游戏开始。</h2><p id="quiet-caption"></p></div>
+          <img id="game-menu" src="assets/cs2-menu.jpg" alt="Counter-Strike 2 游戏主菜单">
+          <div id="game-shade"></div>
+          <div class="shot-copy"><div class="film-name">自动隐藏</div><h2 id="quiet-title">打开 CS2。</h2><p id="quiet-caption"></p></div>
           <img id="quiet-window" src="assets/completed.png" alt="自动恢复的待办窗口">
         </section>
         <section class="shot" id="end" hidden>
@@ -61,8 +69,9 @@
     <nav id="chapters" aria-label="短片章节">
       <button data-at="0" aria-current="true"><span class="mono">00:00</span>片头</button>
       <button data-at="4"><span class="mono">00:04</span>待办与日程</button>
-      <button data-at="14"><span class="mono">00:14</span>专注计时</button>
-      <button data-at="20"><span class="mono">00:20</span>收起窗口</button>
+      <button data-at="8"><span class="mono">00:08</span>专注计时</button>
+      <button data-at="12"><span class="mono">00:12</span>胶囊与收起</button>
+      <button data-at="20"><span class="mono">00:20</span>性能实测</button>
       <button data-at="25"><span class="mono">00:25</span>自动隐藏</button>
       <button data-at="32"><span class="mono">00:32</span>片尾</button>
     </nav>
