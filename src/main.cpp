@@ -1,5 +1,7 @@
 #include "model.hpp"
 #include "virtual_desktop.hpp"
+#include "updater.hpp"
+#include "version.hpp"
 #include <windowsx.h>
 #include <commctrl.h>
 #include <commdlg.h>
@@ -14,11 +16,13 @@ constexpr UINT TrayMessage = WM_APP + 1, ForegroundMessage = WM_APP + 2;
 constexpr UINT ShowRequest = WM_APP + 3;
 constexpr int AddId = 101, InputId = 102, ListId = 103, SettingsId = 104, HideId = 105;
 constexpr int AutoId = 201, TopId = 202, RulesId = 203, RuleInputId = 204, RuleAddId = 205, BrowseId = 206, RemoveId = 207;
+constexpr int UpdateId = 208;
 constexpr int MenuShow = 301, MenuAuto = 302, MenuTop = 303, MenuSettings = 304, MenuExit = 305, MenuClear = 306;
 HINSTANCE instance;
 HWND mainWindow, taskList, input, addButton, settingsButton, hideButton;
 HWND settingsWindow, rulesList, ruleInput, automaticBox, topmostBox;
 HWND fileDialog;
+HWND updateButton, updateLabel;
 HFONT bodyFont, smallFont, rowFont, doneFont;
 HBRUSH paperBrush, whiteBrush;
 HICON appIcon;
@@ -318,6 +322,26 @@ LRESULT CALLBACK ruleInputProc(HWND window, UINT message, WPARAM wParam, LPARAM 
 
 void openSettings();
 
+void updateAction() {
+    auto update = updateStatus();
+    if (update.phase == UpdatePhase::Available) downloadUpdate();
+    else if (update.phase == UpdatePhase::Ready) {
+        if (MessageBoxW(settingsWindow, L"更新已校验。现在保存数据并安装、重启程序？", L"安装更新", MB_YESNO|MB_ICONQUESTION) == IDYES) {
+            save(); installUpdate(); DestroyWindow(mainWindow);
+        }
+    } else checkUpdate();
+}
+
+void refreshUpdate() {
+    if (!settingsWindow) return;
+    auto update = updateStatus();
+    auto text = update.phase == UpdatePhase::Idle ? L"当前版本 " + wide(AppVersion) : update.message;
+    if (textOf(updateLabel) != text) SetWindowTextW(updateLabel, text.c_str());
+    const wchar_t* button = update.phase == UpdatePhase::Available ? L"下载更新" : update.phase == UpdatePhase::Ready ? L"安装并重启" : L"检查更新";
+    SetWindowTextW(updateButton, button);
+    EnableWindow(updateButton, update.phase != UpdatePhase::Checking && update.phase != UpdatePhase::Downloading);
+}
+
 UINT_PTR CALLBACK fileDialogProc(HWND window, UINT message, WPARAM, LPARAM) {
     // 使用 Windows 经典文件选择窗口，控制文件浏览时的内存占用。
     if (message == WM_INITDIALOG) fileDialog = window;
@@ -369,6 +393,11 @@ LRESULT CALLBACK settingsProc(HWND window, UINT message, WPARAM wParam, LPARAM l
         MoveWindow(remove,px(14),px(334),px(120),px(28),TRUE);
         auto note=child(L"STATIC",L"勾选启用检测 · 修改后自动保存\nCS 1.6 / Source 与同名 Half-Life 进程共用规则。",0,window,-1);
         MoveWindow(note,px(14),px(372),px(412),px(34),TRUE);
+        updateLabel=child(L"STATIC",L"",0,window,-1);
+        MoveWindow(updateLabel,px(14),px(418),px(290),px(42),TRUE);
+        updateButton=child(L"BUTTON",L"检查更新",WS_TABSTOP,window,UpdateId);
+        MoveWindow(updateButton,px(316),px(420),px(110),px(28),TRUE);
+        refreshUpdate();
         refreshRules(); return 0;
     }
     case WM_CTLCOLORSTATIC:
@@ -376,6 +405,7 @@ LRESULT CALLBACK settingsProc(HWND window, UINT message, WPARAM wParam, LPARAM l
         SetBkColor(reinterpret_cast<HDC>(wParam), Paper); SetTextColor(reinterpret_cast<HDC>(wParam), Ink); return reinterpret_cast<LRESULT>(paperBrush);
     case WM_COMMAND:
         switch (LOWORD(wParam)) {
+        case UpdateId: updateAction(); break;
         case AutoId: state.automatic=Button_GetCheck(automaticBox)==BST_CHECKED; save(); evaluateForeground(); InvalidateRect(mainWindow,nullptr,FALSE); break;
         case TopId: state.topmost=Button_GetCheck(topmostBox)==BST_CHECKED; SetWindowPos(mainWindow,state.topmost?HWND_TOPMOST:HWND_NOTOPMOST,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE); save(); break;
         case RuleAddId: addRule(textOf(ruleInput)); break;
@@ -414,7 +444,7 @@ LRESULT CALLBACK settingsProc(HWND window, UINT message, WPARAM wParam, LPARAM l
 void openSettings() {
     if (settingsWindow) { ShowWindow(settingsWindow,SW_SHOWNORMAL); SetForegroundWindow(settingsWindow); return; }
     RECT owner{}; GetWindowRect(mainWindow,&owner);
-    RECT rect{0,0,px(440),px(420)};
+    RECT rect{0,0,px(440),px(470)};
     AdjustWindowRectExForDpi(&rect,WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU,FALSE,WS_EX_TOOLWINDOW,dpi);
     settingsWindow=CreateWindowExW(WS_EX_TOOLWINDOW,L"FloatingTodoSettings",L"浮光待办 · 自动隐藏设置",WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU,
         owner.left-px(80),owner.top+px(16),rect.right-rect.left,rect.bottom-rect.top,mainWindow,nullptr,instance,nullptr);
@@ -486,7 +516,7 @@ LRESULT CALLBACK mainProc(HWND window,UINT message,WPARAM wParam,LPARAM lParam) 
     case WM_CONTEXTMENU:menu(window);return 0;
     case ForegroundMessage:evaluateForeground();return 0;
     case ShowRequest:manuallyHidden=false;evaluateForeground();updateTray();return 0;
-    case WM_TIMER:evaluateForeground();return 0;
+    case WM_TIMER:evaluateForeground();refreshUpdate();return 0;
     case TrayMessage:
         if(lParam==WM_LBUTTONDBLCLK) {manuallyHidden=false;evaluateForeground();updateTray();}
         if(lParam==WM_RBUTTONUP)menu(window);
@@ -513,6 +543,7 @@ HICON createIcon() {
 
 int WINAPI wWinMain(HINSTANCE app,HINSTANCE,LPWSTR,int) {
     instance=app;
+    if (runUpdateHelper()) return 0;
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     std::set_terminate([]{fatal(L"数据或程序状态无效，应用已停止。请检查数据文件与安装目录权限。");});
     HANDLE mutex=CreateMutexW(nullptr,FALSE,L"Local\\FloatingTodo.DesktopList.v1");
@@ -560,6 +591,7 @@ int WINAPI wWinMain(HINSTANCE app,HINSTANCE,LPWSTR,int) {
         TranslateMessage(&message);DispatchMessageW(&message);
     }
     require(result!=-1,L"窗口消息处理失败。");
+    stopUpdater();
     for(auto font:{bodyFont,smallFont,rowFont,doneFont})DeleteObject(font);
     DeleteObject(paperBrush);DeleteObject(whiteBrush);DestroyIcon(appIcon);shutdownVirtualDesktops();CloseHandle(mutex);return 0;
 }
