@@ -19,7 +19,7 @@ if ($Test) {
     if ($LASTEXITCODE -ne 0) { throw '窗口模式检查编译失败' }
     & '.\build\window_modes.exe'
     if ($LASTEXITCODE -ne 0) { throw '窗口模式检查失败' }
-    & g++ @options 'tests\taskbar_panel.cpp' 'src\taskbar_panel.cpp' 'src\model.cpp' 'build\app.res' '-o' 'build\taskbar_panel_tests.exe' '-lcomctl32' '-lgdi32' '-luser32'
+    & g++ @options 'tests\taskbar_panel.cpp' 'src\taskbar_panel.cpp' 'src\model.cpp' 'src\virtual_desktop.cpp' 'build\app.res' '-o' 'build\taskbar_panel_tests.exe' '-lcomctl32' '-lgdi32' '-luser32' '-ldwmapi' '-lole32' '-luuid' '-ladvapi32'
     if ($LASTEXITCODE -ne 0) { throw '任务栏信息检查编译失败' }
     & '.\build\taskbar_panel_tests.exe'
     if ($LASTEXITCODE -ne 0) { throw '任务栏信息检查失败' }

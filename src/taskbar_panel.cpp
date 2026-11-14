@@ -99,18 +99,19 @@ void syncTaskbarPanel(bool visible) {
         if(panelWindow && IsWindowVisible(panelWindow)){SendMessageW(tooltipWindow,TTM_POP,0,0);ShowWindow(panelWindow,SW_HIDE);}
         return;
     }
-    if(panelWindow && GetParent(panelWindow)!=slot.host)destroyTaskbarPanel();
+    if(panelWindow && GetWindow(panelWindow,GW_OWNER)!=slot.host)destroyTaskbarPanel();
     if(!panelWindow) {
         panelDpi=slot.dpi;font();
-        // 使用任务栏的 DPI 模式创建跨进程子窗口，保留主窗口的缩放设置。
+        // 使用任务栏的 DPI 模式创建附属窗口，保留主窗口的缩放设置。
         auto previous=SetThreadDpiAwarenessContext(GetWindowDpiAwarenessContext(slot.host));
         require(previous!=nullptr,L"无法设置任务栏信息的屏幕缩放。");
-        HWND created=CreateWindowExW(WS_EX_NOACTIVATE,L"GlimmerTaskbarPanel",L"浮光待办 · 任务栏信息",WS_CHILD|WS_CLIPSIBLINGS,0,0,1,1,slot.host,nullptr,appInstance,nullptr);
+        HWND created=CreateWindowExW(WS_EX_NOACTIVATE|WS_EX_TOOLWINDOW|WS_EX_LAYERED,L"GlimmerTaskbarPanel",L"浮光待办 · 任务栏信息",WS_POPUP,0,0,1,1,slot.host,nullptr,appInstance,nullptr);
         require(SetThreadDpiAwarenessContext(previous)!=nullptr,L"无法恢复窗口缩放设置。");
         require(created!=nullptr,L"无法创建任务栏信息窗口。");
+        require(SetLayeredWindowAttributes(created,0,255,LWA_ALPHA)!=FALSE,L"无法设置任务栏信息的合成绘制。");
     }
     if(panelDpi!=slot.dpi){panelDpi=slot.dpi;font();}
-    const auto& rect=slot.bounds;
+    auto rect=slot.bounds;MapWindowPoints(slot.host,nullptr,reinterpret_cast<POINT*>(&rect),2);
     require(SetWindowPos(panelWindow,HWND_TOP,rect.left,rect.top,rect.right-rect.left,rect.bottom-rect.top,SWP_NOACTIVATE|SWP_SHOWWINDOW)!=FALSE,L"无法显示任务栏信息。");
     auto info=model->compactInfo(nowSeconds());
     if(details!=info.details || lastTheme!=model->theme) {

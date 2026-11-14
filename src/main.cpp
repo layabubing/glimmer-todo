@@ -735,7 +735,9 @@ void applyVisibility() {
     } else if(compactWindow && IsWindowVisible(compactWindow)) {
         SendMessageW(compactTooltip,TTM_POP,0,0);ShowWindow(compactWindow,SW_HIDE);
     }
-    syncTaskbarPanel(taskbar);refreshCompact();applyingVisibility=false;
+    syncTaskbarPanel(taskbar);
+    if(taskbar && taskbarPanelWindow() && !followCurrentDesktop({taskbarPanelWindow()}))syncTaskbarPanel(false);
+    refreshCompact();applyingVisibility=false;
 }
 
 void evaluateForeground() {
@@ -753,7 +755,7 @@ void CALLBACK foregroundEvent(HWINEVENTHOOK, DWORD, HWND, LONG, LONG, DWORD, DWO
 }
 
 void CALLBACK desktopEvent(HWINEVENTHOOK, DWORD, HWND window, LONG, LONG, DWORD, DWORD) {
-    if (window == mainWindow || window == compactWindow) PostMessageW(mainWindow, ForegroundMessage, 0, 0);
+    if (window == mainWindow || window == compactWindow || window == taskbarPanelWindow()) PostMessageW(mainWindow, ForegroundMessage, 0, 0);
 }
 
 void updateTray() {
