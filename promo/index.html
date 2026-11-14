@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#fafaf9">
+  <title>浮光待办 · 产品短片</title>
+  <link rel="stylesheet" href="film.css">
+  <script src="film.js" defer></script>
+</head>
+<body>
+  <header class="mast">
+    <div class="brand"><i class="app-mark" aria-hidden="true"></i>Glimmer Todo</div>
+    <span class="mast-divider"></span><span>产品短片</span>
+    <span class="platform"><i class="windows" aria-hidden="true"></i>Windows</span>
+  </header>
+  <main>
+    <div id="player">
+      <div id="stage" aria-label="浮光待办产品宣传片">
+        <canvas id="art" aria-hidden="true"></canvas>
+        <section class="shot" id="intro">
+          <div class="intro-copy">
+            <div class="film-name">Glimmer Todo</div>
+            <h1>浮光待办<span class="title-dot">.</span></h1>
+            <p>记下待办，给桌面留白。</p>
+            <div id="cover-action"><button id="watch"><i class="triangle"></i>播放短片</button><span class="mono">00:36</span></div>
+          </div>
+        </section>
+        <section class="shot" id="work" hidden>
+          <div class="shot-copy"><div class="film-name">Glimmer Todo</div><h2 id="work-title"></h2><p id="work-caption"></p></div>
+          <div id="native"><img id="work-image" src="assets/tasks.png" alt="浮光待办的原生窗口"><i id="tap"></i></div>
+        </section>
+        <section class="shot" id="focus" hidden>
+          <div id="focus-type"><div class="film-name">番茄钟</div><div class="clock-number"><b id="minutes">25</b><span>:</span><b id="seconds">00</b></div><h2>专注这一件事。</h2></div>
+          <img class="native-focus" src="assets/focus.png" alt="原生专注页面">
+        </section>
+        <section class="shot" id="compact" hidden>
+          <div class="center-copy"><div class="film-name">收起模式</div><h2 id="compact-title">收成一枚胶囊。</h2></div>
+          <div id="miniature"><img id="compact-image" src="assets/capsule.png" alt="收起后的进度与最近日程"></div>
+          <div id="bar-line" aria-hidden="true"><i class="windows"></i></div>
+        </section>
+        <section class="shot" id="quiet" hidden>
+          <div class="shot-copy"><div class="film-name">自动隐藏</div><h2 id="quiet-title">游戏开始。</h2><p id="quiet-caption"></p></div>
+          <img id="quiet-window" src="assets/completed.png" alt="自动恢复的待办窗口">
+        </section>
+        <section class="shot" id="end" hidden>
+          <div class="lockup"><i class="app-mark"></i><h2>浮光待办</h2><div class="film-name">Glimmer Todo</div></div>
+        </section>
+      </div>
+      <div class="transport">
+        <label class="seek-wrap"><span class="sr">播放进度</span><input id="seek" type="range" min="0" max="36" step="0.01" value="0"></label>
+        <div class="control-line">
+          <button class="icon-button" id="play" aria-label="播放" title="播放（空格）"><i class="triangle"></i></button>
+          <span class="time mono"><span id="elapsed">00:00</span><span class="time-div">/</span>00:36</span>
+          <span id="chapter-name">片头</span>
+          <button class="icon-button" id="sound" aria-label="静音" title="静音（M）"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 9h4l5-4v14l-5-4h-4z"/><path class="waves" d="M16 8q4 4 0 8m3-11q7 7 0 14"/><path class="muted-line" d="m16 9 6 6m0-6-6 6"/></svg></button>
+          <button class="icon-button" id="expand" aria-label="进入全屏" title="全屏（F）"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4H4v5m11-5h5v5M4 15v5h5m11-5v5h-5"/></svg></button>
+        </div>
+      </div>
+    </div>
+    <nav id="chapters" aria-label="短片章节">
+      <button data-at="0" aria-current="true"><span class="mono">00:00</span>片头</button>
+      <button data-at="4"><span class="mono">00:04</span>待办与日程</button>
+      <button data-at="14"><span class="mono">00:14</span>专注计时</button>
+      <button data-at="20"><span class="mono">00:20</span>收起窗口</button>
+      <button data-at="25"><span class="mono">00:25</span>自动隐藏</button>
+      <button data-at="32"><span class="mono">00:32</span>片尾</button>
+    </nav>
+    <p id="status" role="status"></p>
+  </main>
+  <audio id="score" preload="auto" src="assets/score.wav"></audio>
+</body>
+</html>
