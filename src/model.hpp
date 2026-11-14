@@ -48,6 +48,13 @@ struct Pomodoro {
     bool configure(int focus, int shortBreak, int longBreak);
 };
 
+enum class CollapseMode { Capsule, TopBar, Hidden, Taskbar };
+constexpr const wchar_t* CollapseNames[] = {L"胶囊", L"屏幕顶部长条", L"完全隐藏", L"任务栏"};
+
+struct CompactInfo {
+    std::wstring tasks, schedule, timer, details;
+};
+
 struct State {
     std::vector<Task> tasks;
     std::vector<Rule> rules;
@@ -56,6 +63,8 @@ struct State {
     bool automatic = true;
     bool topmost = true;
     int theme = 0;
+    CollapseMode collapseMode = CollapseMode::Capsule;
+    int capsuleX = -1, capsuleY = -1;
     int x = -1, y = -1, width = 260, height = 300;
     uint64_t nextId = 1;
 
@@ -70,6 +79,7 @@ struct State {
     void completeSchedule(uint64_t id, int64_t now);
     void load(const std::filesystem::path& file);
     void save(const std::filesystem::path& file) const;
+    CompactInfo compactInfo(int64_t now) const;
 };
 
 std::wstring trim(const std::wstring& value);

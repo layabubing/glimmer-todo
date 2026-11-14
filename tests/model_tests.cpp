@@ -73,7 +73,24 @@ int main() {
     }
     check(transitionProgress(0)==0.0 && transitionProgress(180)==1.0 && transitionProgress(1000)==1.0,"animation endpoints");
     check(transitionProgress(45)<transitionProgress(90)&&transitionProgress(90)<transitionProgress(135),"animation progresses forward");
+    for(int mode=0;mode<4;++mode) {
+        state.collapseMode=static_cast<CollapseMode>(mode);state.capsuleX=-320;state.capsuleY=64;
+        state.save(directory/L"collapse.json");State compact;compact.load(directory/L"collapse.json");
+        check(compact.collapseMode==state.collapseMode && compact.capsuleX==-320 && compact.capsuleY==64,"persist collapse mode and position");
+    }
     auto now=nowSeconds();
+    State compact;
+    check(compact.collapseMode==CollapseMode::Capsule && compact.compactInfo(now).tasks==L"待办 0/0" && compact.compactInfo(now).schedule==L"暂无日程","compact defaults");
+    compact.addTask(L"准备资料");compact.addTask(L"完成记录");compact.toggleTask(compact.tasks.back().id);
+    compact.putSchedule(0,L"过去的日程",now-60,0);auto past=compact.schedules.front().id;
+    compact.putSchedule(0,L"将来的日程",now+60,0);
+    check(compact.compactInfo(now).tasks==L"待办 1/2" && compact.compactInfo(now).schedule.find(L"已到期")!=std::wstring::npos,"compact completion and overdue event");
+    compact.completeSchedule(past,now);
+    check(compact.compactInfo(now).schedule.find(L"将来的日程")!=std::wstring::npos,"compact skips completed schedule");
+    compact.pomodoro.toggle(now);
+    check(compact.compactInfo(now+61).timer==L"专注 23:59" && compact.compactInfo(now+61).details.find(L"进行中")!=std::wstring::npos,"compact live countdown");
+    compact.pomodoro.toggle(now+61);
+    check(compact.compactInfo(now+100).timer==L"专注 23:59" && compact.compactInfo(now+100).details.find(L"已暂停")!=std::wstring::npos,"compact paused countdown");
     auto local=localTime(now); local.wSecond=0; local.wMilliseconds=0;
     check(timestampFromLocal(local)>0 && localTime(timestampFromLocal(local)).wHour==local.wHour,"local schedule time round trip");
     State calendar;

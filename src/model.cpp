@@ -176,6 +176,21 @@ bool State::matches(const std::wstring& value) const {
     return std::any_of(rules.begin(), rules.end(), [&](const Rule& rule) { return rule.enabled && rule.exe == exe; });
 }
 
+CompactInfo State::compactInfo(int64_t now) const {
+    CompactInfo info;
+    auto completed = std::count_if(tasks.begin(), tasks.end(), [](const Task& task) { return task.done; });
+    info.tasks = L"待办 " + std::to_wstring(completed) + L"/" + std::to_wstring(tasks.size());
+    const Schedule* next = nullptr;
+    for (const auto& event : schedules) if (!event.done && (!next || event.due < next->due)) next = &event;
+    info.schedule = next ? (next->due <= now ? L"已到期 · " : L"日程 · ") + formatDate(next->due) + L" " + next->text : L"暂无日程";
+    int seconds = pomodoro.secondsLeft(now);
+    wchar_t clock[24]{};
+    swprintf_s(clock, L"%02d:%02d", seconds / 60, seconds % 60);
+    info.timer = std::wstring(pomodoro.phase == 0 ? L"专注 " : pomodoro.phase == 1 ? L"短休息 " : L"长休息 ") + clock;
+    info.details = info.tasks + L" · " + info.timer + (pomodoro.running ? L" · 进行中" : L" · 已暂停") + L"\n" + info.schedule;
+    return info;
+}
+
 void State::load(const std::filesystem::path& file) {
     if (!std::filesystem::exists(file)) return;
     std::ifstream input(file, std::ios::binary);
@@ -217,6 +232,10 @@ void State::load(const std::filesystem::path& file) {
     topmost = root.at("topmost").get<bool>();
     theme = root.value("theme", 0);
     require(theme >= 0 && theme <= 2, L"主题设置无效。");
+    int collapse = root.value("collapseMode", 0);
+    require(collapse >= 0 && collapse <= 3, L"收起模式无效。");
+    collapseMode = static_cast<CollapseMode>(collapse);
+    capsuleX = root.value("capsuleX", -1); capsuleY = root.value("capsuleY", -1);
     const auto& bounds = root.at("window");
     x = bounds.at("x").get<int>(); y = bounds.at("y").get<int>();
     width = std::clamp(bounds.at("width").get<int>(), 240, 900);
@@ -229,6 +248,7 @@ void State::load(const std::filesystem::path& file) {
 
 void State::save(const std::filesystem::path& file) const {
     json root{{"version", 1}, {"layoutVersion", 2}, {"automatic", automatic}, {"topmost", topmost}, {"theme", theme},
+        {"collapseMode", static_cast<int>(collapseMode)}, {"capsuleX", capsuleX}, {"capsuleY", capsuleY},
         {"window", {{"x", x}, {"y", y}, {"width", width}, {"height", height}}},
         {"tasks", json::array()}, {"rules", json::array()}, {"schedules", json::array()}};
     for (const auto& task : tasks) root["tasks"].push_back({{"id", task.id}, {"text", utf8(task.text)}, {"done", task.done}});
