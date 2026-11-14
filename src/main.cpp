@@ -1064,7 +1064,7 @@ LRESULT CALLBACK mainProc(HWND window,UINT message,WPARAM wParam,LPARAM lParam) 
     case WM_DISPLAYCHANGE:case WM_SETTINGCHANGE:positionCompact();return 0;
     case ForegroundMessage:evaluateForeground();return 0;
     case ShowRequest:manuallyHidden=false;evaluateForeground();updateTray();return 0;
-    case WM_TIMER:if(wParam==2){animateView();return 0;}pomodoroTick();evaluateForeground();refreshUpdate();scheduleNotices();return 0;
+    case WM_TIMER:if(wParam==2){animateView();return 0;}evaluateForeground();refreshUpdate();pomodoroTick();scheduleNotices();return 0;
     case TrayMessage:
         if(lParam==WM_LBUTTONDBLCLK) {manuallyHidden=false;evaluateForeground();updateTray();}
         if(lParam==WM_RBUTTONUP)menu(window);
