@@ -44,6 +44,8 @@ int main() {
     state=State{};state.automatic=false;state.x=40;state.y=40;initializeWindows();ready=true;applyVisibility();frames();noNativeControls(mainWindow);noNativeControls(compactWindow);
     taskInput="整理今天的想法 📝";check(submitTask(),"create task through UI action");auto first=state.tasks.front().id;
     taskInput="为专注留出半个小时";check(submitTask(),"create second task");state.toggleTask(first);save();
+    taskInput="确认下一个日程";check(submitTask(),"create third task for compact list");
+    taskInput="完成今天的阅读";check(submitTask(),"create fourth task for compact list");
     editTask(first);taskInput="整理今天的想法与笔记 📝";check(submitTask() && state.tasks.front().text==L"整理今天的想法与笔记 📝","edit Unicode task through UI action");
     editTask(first);cancelEdit();check(!editingId && taskInput.empty(),"cancel task editing");
     auto now=nowSeconds();check(state.putSchedule(0,L"阅读与整理记录",now+3600,1),"create real schedule fixture");
@@ -57,6 +59,11 @@ int main() {
         openFiles();frames(3);noNativeControls(fileDialog);snapshot(fileDialog,L"theme-"+std::to_wstring(theme)+L"-files");DestroyWindow(fileDialog);DestroyWindow(settingsWindow);
         openSchedule();frames(3);noNativeControls(scheduleWindow);snapshot(scheduleWindow,L"theme-"+std::to_wstring(theme)+L"-editor");DestroyWindow(scheduleWindow);
     }
+    RECT normalSize{};GetWindowRect(mainWindow,&normalSize);int screenDpi=static_cast<int>(GetDpiForWindow(mainWindow));
+    SetWindowPos(mainWindow,nullptr,0,0,MulDiv(240,screenDpi,96),MulDiv(200,screenDpi,96),SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);
+    RECT minimumSize{};GetWindowRect(mainWindow,&minimumSize);check(minimumSize.right-minimumSize.left==MulDiv(240,screenDpi,96) && minimumSize.bottom-minimumSize.top==MulDiv(200,screenDpi,96),"resize custom window to compact minimum");
+    for(int page=0;page<3;++page){selectView(page);frames(12);snapshot(mainWindow,L"minimum-page-"+std::to_wstring(page));}
+    SetWindowPos(mainWindow,nullptr,0,0,normalSize.right-normalSize.left,normalSize.bottom-normalSize.top,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);frames();
     openSchedule();editorText="保存日程的交互检查";editorYear=2026;editorMonth=2;editorDay=30;
     check(!saveSchedule() && !scheduleError.empty(),"invalid calendar date stays in custom editor");
     editorDay=28;editorHour=9;editorMinute=30;editorRepeat=2;check(saveSchedule(),"save calendar date through custom editor");DestroyWindow(scheduleWindow);

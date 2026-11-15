@@ -241,12 +241,16 @@ void State::load(const std::filesystem::path& file) {
     capsuleX = root.value("capsuleX", -1); capsuleY = root.value("capsuleY", -1);
     const auto& bounds = root.at("window");
     x = bounds.at("x").get<int>(); y = bounds.at("y").get<int>();
-    width = std::clamp(bounds.at("width").get<int>(), 280, 900);
-    height = std::clamp(bounds.at("height").get<int>(), 280, 1200);
+    width = std::clamp(bounds.at("width").get<int>(), 240, 900);
+    height = std::clamp(bounds.at("height").get<int>(), 200, 1200);
+    if (root.value("layoutVersion", 1) == 3) {
+        width = 260;
+        height = 300;
+    }
 }
 
 void State::save(const std::filesystem::path& file) const {
-    json root{{"version", 1}, {"layoutVersion", 3}, {"automatic", automatic}, {"topmost", topmost}, {"theme", theme},
+    json root{{"version", 1}, {"layoutVersion", 4}, {"automatic", automatic}, {"topmost", topmost}, {"theme", theme},
         {"collapseMode", static_cast<int>(collapseMode)}, {"capsuleX", capsuleX}, {"capsuleY", capsuleY},
         {"window", {{"x", x}, {"y", y}, {"width", width}, {"height", height}}},
         {"tasks", json::array()}, {"rules", json::array()}, {"schedules", json::array()}};

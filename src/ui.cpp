@@ -22,8 +22,8 @@ float currentScale=1;
 void style(int theme,float dpi) {
     currentPalette=themePalette(theme);currentScale=dpi;
     ImGui::GetStyle()=ImGuiStyle{};auto& s=ImGui::GetStyle();const auto& c=currentPalette;
-    s.WindowPadding={16,16};s.FramePadding={10,8};s.ItemSpacing={8,10};s.ItemInnerSpacing={7,6};
-    s.WindowRounding=14;s.ChildRounding=12;s.FrameRounding=9;s.PopupRounding=12;s.ScrollbarRounding=8;s.GrabRounding=6;
+    s.WindowPadding={10,10};s.FramePadding={7,5};s.ItemSpacing={6,6};s.ItemInnerSpacing={5,4};
+    s.WindowRounding=9;s.ChildRounding=7;s.FrameRounding=6;s.PopupRounding=7;s.ScrollbarRounding=5;s.GrabRounding=4;
     s.WindowBorderSize=0;s.ChildBorderSize=1;s.FrameBorderSize=0;s.PopupBorderSize=1;s.ScrollbarSize=5;
     s.TabRounding=8;s.WindowMenuButtonPosition=ImGuiDir_None;
     s.Colors[ImGuiCol_Text]=color(c.text);s.Colors[ImGuiCol_TextDisabled]=color(c.muted);
@@ -42,7 +42,7 @@ void style(int theme,float dpi) {
     s.Colors[ImGuiCol_TableBorderStrong]=color(c.border);s.Colors[ImGuiCol_TableBorderLight]=color(c.border,0.5f);
     s.Colors[ImGuiCol_TitleBg]=color(c.surface);s.Colors[ImGuiCol_TitleBgActive]=color(c.surface);s.Colors[ImGuiCol_TitleBgCollapsed]=color(c.track);
     s.Colors[ImGuiCol_ModalWindowDimBg]={0,0,0,0.25f};
-    s.ScaleAllSizes(dpi);s.FontSizeBase=13;s.FontScaleDpi=dpi;
+    s.ScaleAllSizes(dpi);s.FontSizeBase=12;s.FontScaleDpi=dpi;
 }
 }
 
@@ -87,7 +87,7 @@ Surface::Surface(HWND window):window_(window) {
     io.ConfigWindowsResizeFromEdges=false;io.ConfigInputTextEnterKeepActive=true;
     for(size_t i=0;i<fonts.size();++i) {
         ImFontConfig config;config.FontDataOwnedByAtlas=false;config.MergeMode=i>0;
-        require(io.Fonts->AddFontFromMemoryTTF(fonts[i].data,static_cast<int>(fonts[i].bytes),13,&config)!=nullptr,L"无法加载界面字体。");
+        require(io.Fonts->AddFontFromMemoryTTF(fonts[i].data,static_cast<int>(fonts[i].bytes),12,&config)!=nullptr,L"无法加载界面字体。");
     }
     DXGI_SWAP_CHAIN_DESC desc{};desc.BufferCount=2;desc.BufferDesc.Format=DXGI_FORMAT_B8G8R8A8_UNORM;
     desc.BufferUsage=DXGI_USAGE_RENDER_TARGET_OUTPUT;desc.OutputWindow=window;desc.SampleDesc.Count=1;desc.Windowed=TRUE;desc.SwapEffect=DXGI_SWAP_EFFECT_DISCARD;
@@ -188,7 +188,7 @@ bool toggle(const char* id,bool& value) {
 }
 void text(const char* value,float fontSize,COLORREF tint){ImGui::PushFont(nullptr,fontSize);ImGui::PushStyleColor(ImGuiCol_Text,color(tint==CLR_INVALID?palette().text:tint));ImGui::TextUnformatted(value);ImGui::PopStyleColor();ImGui::PopFont();}
 void muted(const char* value){text(value,11,palette().muted);}
-void section(const char* title,const char* subtitle){text(title,15);if(subtitle)muted(subtitle);ImGui::Spacing();}
+void section(const char* title,const char* subtitle){text(title,13);if(subtitle)muted(subtitle);}
 bool card(const char* id,ImVec2 extent,bool selected){ImGui::PushStyleColor(ImGuiCol_ChildBg,color(selected?palette().selected:palette().surface));return ImGui::BeginChild(id,extent,ImGuiChildFlags_Borders,ImGuiWindowFlags_NoScrollbar|ImGuiWindowFlags_NoScrollWithMouse);}
 void endCard(){ImGui::EndChild();ImGui::PopStyleColor();}
 }

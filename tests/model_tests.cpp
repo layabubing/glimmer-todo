@@ -1,5 +1,6 @@
 #include "../src/model.hpp"
 #include "../src/theme.hpp"
+#include "../vendor/json.hpp"
 #include <iostream>
 #include <fstream>
 
@@ -57,6 +58,13 @@ int main() {
     check(!loaded.rules[0].enabled, "persist disabled rule");
     check(loaded.matches(L"NOTEPAD.EXE"), "persist custom rule");
     check(!loaded.topmost && loaded.x==100 && loaded.y==200 && loaded.width==400 && loaded.height==600, "persist window preferences");
+    auto previousLayout=directory/L"previous-layout.json";
+    {std::ifstream input(file);auto data=nlohmann::json::parse(input);data["layoutVersion"]=3;data["window"]["width"]=300;data["window"]["height"]=380;std::ofstream output(previousLayout);output<<data;}
+    State migrated;migrated.load(previousLayout);
+    check(migrated.width==260 && migrated.height==300,"apply compact dimensions when upgrading layout");
+    check(migrated.x==100 && migrated.y==200 && migrated.tasks[0].text==loaded.tasks[0].text && migrated.rules.size()==loaded.rules.size(),"preserve position and data when upgrading layout");
+    migrated.width=320;migrated.height=360;migrated.save(previousLayout);State resized;resized.load(previousLayout);
+    check(resized.width==320 && resized.height==360,"preserve user dimensions after layout upgrade");
     check(loaded.addTask(L"重启后新增"), "add after reload");
     check(loaded.tasks.back().id > second, "unique ids after reload");
     loaded.removeTask(first);
