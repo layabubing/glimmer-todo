@@ -19,7 +19,7 @@ std::array<FontMapping,2> fonts;
 Palette currentPalette=themePalette(0);
 float currentScale=1;
 
-void style(int theme,float dpi) {
+void style(int theme,float dpi,int fontPercent) {
     currentPalette=themePalette(theme);currentScale=dpi;
     ImGui::GetStyle()=ImGuiStyle{};auto& s=ImGui::GetStyle();const auto& c=currentPalette;
     s.WindowPadding={10,10};s.FramePadding={7,5};s.ItemSpacing={6,6};s.ItemInnerSpacing={5,4};
@@ -42,7 +42,7 @@ void style(int theme,float dpi) {
     s.Colors[ImGuiCol_TableBorderStrong]=color(c.border);s.Colors[ImGuiCol_TableBorderLight]=color(c.border,0.5f);
     s.Colors[ImGuiCol_TitleBg]=color(c.surface);s.Colors[ImGuiCol_TitleBgActive]=color(c.surface);s.Colors[ImGuiCol_TitleBgCollapsed]=color(c.track);
     s.Colors[ImGuiCol_ModalWindowDimBg]={0,0,0,0.25f};
-    s.ScaleAllSizes(dpi);s.FontSizeBase=12;s.FontScaleDpi=dpi;
+    s.ScaleAllSizes(dpi);s.FontSizeBase=12;s.FontScaleDpi=dpi;s.FontScaleMain=fontPercent/100.0f;
 }
 }
 
@@ -109,9 +109,9 @@ void Surface::target() {
 void Surface::select(){ImGui::SetCurrentContext(context_);currentScale=static_cast<float>(GetDpiForWindow(window_))/96.0f;}
 void Surface::resize(UINT width,UINT height){resizeWidth_=width;resizeHeight_=height;}
 
-bool Surface::begin(int theme) {
+bool Surface::begin(int theme,int fontPercent) {
     select();float dpi=static_cast<float>(GetDpiForWindow(window_))/96.0f;
-    if(theme_!=theme || dpi_!=dpi){style(theme,dpi);theme_=theme;dpi_=dpi;}else{currentPalette=themePalette(theme);currentScale=dpi;}
+    if(theme_!=theme || dpi_!=dpi || fontPercent_!=fontPercent){style(theme,dpi,fontPercent);theme_=theme;dpi_=dpi;fontPercent_=fontPercent;}else{currentPalette=themePalette(theme);currentScale=dpi;}
     if(resizeWidth_ && resizeHeight_) {
         deviceContext->OMSetRenderTargets(0,nullptr,nullptr);target_->Release();target_=nullptr;
         require(SUCCEEDED(chain_->ResizeBuffers(0,resizeWidth_,resizeHeight_,DXGI_FORMAT_UNKNOWN,0)),L"无法调整界面绘制缓冲。");target();resizeWidth_=resizeHeight_=0;
@@ -188,7 +188,7 @@ bool toggle(const char* id,bool& value) {
 }
 void text(const char* value,float fontSize,COLORREF tint){ImGui::PushFont(nullptr,fontSize);ImGui::PushStyleColor(ImGuiCol_Text,color(tint==CLR_INVALID?palette().text:tint));ImGui::TextUnformatted(value);ImGui::PopStyleColor();ImGui::PopFont();}
 void muted(const char* value){text(value,11,palette().muted);}
-void section(const char* title,const char* subtitle){text(title,13);if(subtitle)muted(subtitle);}
+void section(const char* title,const char* subtitle){text(title,13);if(subtitle){ImGui::PushTextWrapPos();muted(subtitle);ImGui::PopTextWrapPos();}}
 bool card(const char* id,ImVec2 extent,bool selected){ImGui::PushStyleColor(ImGuiCol_ChildBg,color(selected?palette().selected:palette().surface));return ImGui::BeginChild(id,extent,ImGuiChildFlags_Borders,ImGuiWindowFlags_NoScrollbar|ImGuiWindowFlags_NoScrollWithMouse);}
 void endCard(){ImGui::EndChild();ImGui::PopStyleColor();}
 }

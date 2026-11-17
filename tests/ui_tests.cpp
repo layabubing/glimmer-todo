@@ -14,6 +14,12 @@ void pump() {
 void frames(int count=2) {
     for(int index=0;index<count;++index){pump();renderWindows();Sleep(18);}
 }
+float renderedTextWidth() {
+    auto view=surface(mainWindow);
+    if(view->begin(state.theme,state.fontPercent))drawMain();
+    float width=ImGui::CalcTextSize("字体比例检查").x;
+    view->end();return width;
+}
 void noNativeControls(HWND window) {
     int count=0;EnumChildWindows(window,[](HWND child,LPARAM value)->BOOL {
         if(IsWindowVisible(child)){++*reinterpret_cast<int*>(value);}
@@ -59,10 +65,23 @@ int main() {
         openFiles();frames(3);noNativeControls(fileDialog);snapshot(fileDialog,L"theme-"+std::to_wstring(theme)+L"-files");DestroyWindow(fileDialog);DestroyWindow(settingsWindow);
         openSchedule();frames(3);noNativeControls(scheduleWindow);snapshot(scheduleWindow,L"theme-"+std::to_wstring(theme)+L"-editor");DestroyWindow(scheduleWindow);
     }
+    float normalTextWidth=renderedTextWidth();
     RECT normalSize{};GetWindowRect(mainWindow,&normalSize);int screenDpi=static_cast<int>(GetDpiForWindow(mainWindow));
+    for(int choice:{0,7}) {
+        command(FontFirstId+choice);frames(3);float width=renderedTextWidth();
+        check(choice==0?width<normalTextWidth*0.9f:width>normalTextWidth*1.4f,"font preference changes actual text dimensions");
+        for(int page=0;page<3;++page){selectView(page);frames(12);snapshot(mainWindow,L"font-"+std::to_wstring(state.fontPercent)+L"-page-"+std::to_wstring(page));}
+        openSettings();frames(3);snapshot(settingsWindow,L"font-"+std::to_wstring(state.fontPercent)+L"-settings");DestroyWindow(settingsWindow);
+        openSchedule();frames(3);snapshot(scheduleWindow,L"font-"+std::to_wstring(state.fontPercent)+L"-editor");DestroyWindow(scheduleWindow);
+        openFiles();frames(3);snapshot(fileDialog,L"font-"+std::to_wstring(state.fontPercent)+L"-files");DestroyWindow(fileDialog);
+        openImport();frames(3);noNativeControls(importWindow);snapshot(importWindow,L"font-"+std::to_wstring(state.fontPercent)+L"-import");
+        automaticallyHidden=true;applyVisibility();check(!IsWindowVisible(importWindow),"automatically hide import window");automaticallyHidden=false;applyVisibility();check(IsWindowVisible(importWindow),"restore import window");DestroyWindow(importWindow);
+        RECT after{};GetWindowRect(mainWindow,&after);check(EqualRect(&normalSize,&after),"font preference preserves compact window dimensions");
+    }
     SetWindowPos(mainWindow,nullptr,0,0,MulDiv(240,screenDpi,96),MulDiv(200,screenDpi,96),SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);
     RECT minimumSize{};GetWindowRect(mainWindow,&minimumSize);check(minimumSize.right-minimumSize.left==MulDiv(240,screenDpi,96) && minimumSize.bottom-minimumSize.top==MulDiv(200,screenDpi,96),"resize custom window to compact minimum");
     for(int page=0;page<3;++page){selectView(page);frames(12);snapshot(mainWindow,L"minimum-page-"+std::to_wstring(page));}
+    command(FontFirstId+2);frames();
     SetWindowPos(mainWindow,nullptr,0,0,normalSize.right-normalSize.left,normalSize.bottom-normalSize.top,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);frames();
     openSchedule();editorText="保存日程的交互检查";editorYear=2026;editorMonth=2;editorDay=30;
     check(!saveSchedule() && !scheduleError.empty(),"invalid calendar date stays in custom editor");
@@ -87,6 +106,16 @@ int main() {
     check(state.tasks.size()==previousCount+1 && state.tasks.back().text==L"中文输入检查","Enter saves text through custom input");
     editTask(first);frames(2);surface(mainWindow)->select();ImGui::GetIO().AddKeyEvent(ImGuiKey_Escape,true);frames(2);surface(mainWindow)->select();ImGui::GetIO().AddKeyEvent(ImGuiKey_Escape,false);frames(2);
     check(!editingId && taskInput.empty(),"Escape cancels editing through custom input");
+    command(CollapseFirstId+2);command(ImportId);frames(2);check(!manuallyHidden && IsWindowVisible(importWindow),"import command expands collapsed application");DestroyWindow(importWindow);
+    surface(mainWindow)->select();ImGui::GetIO().AddKeyEvent(ImGuiMod_Ctrl,true);ImGui::GetIO().AddKeyEvent(ImGuiKey_I,true);frames(2);
+    check(importWindow && IsWindowVisible(importWindow),"Ctrl+I opens import window");surface(mainWindow)->select();ImGui::GetIO().AddKeyEvent(ImGuiKey_I,false);ImGui::GetIO().AddKeyEvent(ImGuiMod_Ctrl,false);
+    auto beforeImport=state.tasks.size();importText="有效任务\n"+std::string(501,'x');
+    check(!submitImport() && !importError.empty() && state.tasks.size()==beforeImport,"invalid import remains editable without adding partial tasks");
+    importText.clear();importError.clear();focusImportInput=true;frames(2);surface(importWindow)->select();ImGui::GetIO().AddInputCharactersUTF8("批量任务甲\n\n批量任务乙 📝");frames(2);
+    check(importText=="批量任务甲\n\n批量任务乙 📝","multiline import field accepts Unicode input");snapshot(importWindow,L"batch-import");
+    surface(importWindow)->select();ImGui::GetIO().AddKeyEvent(ImGuiMod_Ctrl,true);ImGui::GetIO().AddKeyEvent(ImGuiKey_Enter,true);frames(2);
+    check(!importWindow && state.tasks.size()==beforeImport+2 && state.tasks.back().text==L"批量任务乙 📝","Ctrl+Enter imports and closes the custom editor");
+    surface(mainWindow)->select();ImGui::GetIO().AddKeyEvent(ImGuiMod_Ctrl,false);ImGui::GetIO().AddKeyEvent(ImGuiKey_Enter,false);frames(2);
     State persisted;persisted.load(dataFile);check(persisted.tasks.size()==state.tasks.size() && persisted.schedules.size()==state.schedules.size(),"persist UI changes to real data file");
     check(followCurrentDesktop({mainWindow,compactWindow}),"custom UI supports virtual desktop service");
     DestroyWindow(mainWindow);pump();ui::shutdown();DestroyIcon(appIcon);shutdownVirtualDesktops();Gdiplus::GdiplusShutdown(token);

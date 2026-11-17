@@ -32,7 +32,7 @@ public:
     ~Surface();
     Surface(const Surface&)=delete;
     Surface& operator=(const Surface&)=delete;
-    bool begin(int theme);
+    bool begin(int theme,int fontPercent);
     void end();
     void print(HDC target);
     void resize(UINT width,UINT height);
@@ -47,7 +47,7 @@ private:
     IDXGISwapChain* chain_ = nullptr;
     ID3D11RenderTargetView* target_ = nullptr;
     UINT resizeWidth_=0,resizeHeight_=0;
-    int theme_=-1;
+    int theme_=-1,fontPercent_=0;
     float dpi_=0;
 };
 }

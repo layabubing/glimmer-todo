@@ -11,14 +11,15 @@ State* model;
 UINT expandRequest, menuRequest, panelDpi = 96;
 HFONT textFont;
 std::wstring details;
-int lastTheme = -1;
+int lastTheme = -1,lastFontPercent = 0;
 
 int scale(int value) { return MulDiv(value, panelDpi, 96); }
 
 void font() {
     if(textFont)DeleteObject(textFont);
-    textFont=CreateFontW(-scale(11),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Microsoft YaHei UI");
+    textFont=CreateFontW(-MulDiv(scale(11),model->fontPercent,100),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Microsoft YaHei UI");
     require(textFont!=nullptr,L"无法创建任务栏信息字体。");
+    lastFontPercent=model->fontPercent;
 }
 
 void draw(HWND window,HDC target) {
@@ -105,15 +106,16 @@ void syncTaskbarPanel(bool visible) {
         require(created!=nullptr,L"无法创建任务栏信息窗口。");
         require(SetLayeredWindowAttributes(created,0,255,LWA_ALPHA)!=FALSE,L"无法设置任务栏信息的合成绘制。");
     }
-    if(panelDpi!=slot.dpi){panelDpi=slot.dpi;font();}
+    bool fontChanged=panelDpi!=slot.dpi || lastFontPercent!=model->fontPercent;
+    if(fontChanged){panelDpi=slot.dpi;font();}
     auto rect=slot.bounds;MapWindowPoints(slot.host,nullptr,reinterpret_cast<POINT*>(&rect),2);
     require(SetWindowPos(panelWindow,HWND_TOP,rect.left,rect.top,rect.right-rect.left,rect.bottom-rect.top,SWP_NOACTIVATE|SWP_SHOWWINDOW)!=FALSE,L"无法显示任务栏信息。");
     auto info=model->compactInfo(nowSeconds());
-    if(details!=info.details || lastTheme!=model->theme) {
+    if(details!=info.details || lastTheme!=model->theme || fontChanged) {
         details=info.details;lastTheme=model->theme;SetWindowTextW(panelWindow,details.c_str());
         InvalidateRect(panelWindow,nullptr,FALSE);
     }
-    tooltip.update(panelWindow,details,rect,model->theme);
+    tooltip.update(panelWindow,details,rect,model->theme,model->fontPercent);
 }
 
 void destroyTaskbarPanel() {

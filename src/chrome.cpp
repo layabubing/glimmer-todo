@@ -9,12 +9,12 @@ namespace {
 HINSTANCE app;
 HWND popup,targetWindow;
 std::vector<MenuItem> rows;
-int popupTheme=0,popupDpi=96,highlight=-1;
+int popupTheme=0,popupDpi=96,popupFontPercent=100,highlight=-1;
 
 int scaled(int value,int dpi){return MulDiv(value,dpi,96);}
 void fill(HDC dc,RECT rect,COLORREF color){auto brush=CreateSolidBrush(color);FillRect(dc,&rect,brush);DeleteObject(brush);}
-void label(HDC dc,const std::wstring& text,RECT rect,int dpi,COLORREF color,UINT flags=DT_SINGLELINE|DT_VCENTER|DT_END_ELLIPSIS) {
-    auto font=CreateFontW(-scaled(12,dpi),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Microsoft YaHei UI");
+void label(HDC dc,const std::wstring& text,RECT rect,int dpi,COLORREF color,UINT flags,int fontPercent) {
+    auto font=CreateFontW(-MulDiv(scaled(12,dpi),fontPercent,100),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Microsoft YaHei UI");
     auto old=SelectObject(dc,font);SetTextColor(dc,color);SetBkMode(dc,TRANSPARENT);DrawTextW(dc,text.c_str(),-1,&rect,flags|DT_NOPREFIX);SelectObject(dc,old);DeleteObject(font);
 }
 void shape(HWND window,int dpi) {
@@ -29,7 +29,7 @@ LRESULT CALLBACK tipProc(HWND window,UINT message,WPARAM wParam,LPARAM lParam) {
     if(message==WM_NCHITTEST)return HTTRANSPARENT;
     if(message==WM_PAINT || message==WM_PRINTCLIENT) {
         PAINTSTRUCT paint{};auto dc=message==WM_PAINT?BeginPaint(window,&paint):reinterpret_cast<HDC>(wParam);RECT rect{};GetClientRect(window,&rect);auto c=themePalette(tip->theme);fill(dc,rect,c.surface);
-        InflateRect(&rect,-scaled(12,tip->dpi),-scaled(10,tip->dpi));label(dc,tip->content,rect,tip->dpi,c.text,DT_WORDBREAK);
+        InflateRect(&rect,-scaled(12,tip->dpi),-scaled(10,tip->dpi));label(dc,tip->content,rect,tip->dpi,c.text,DT_WORDBREAK,tip->fontPercent);
         if(message==WM_PAINT){EndPaint(window,&paint);}
         return 0;
     }
@@ -49,8 +49,8 @@ LRESULT CALLBACK menuProc(HWND window,UINT message,WPARAM wParam,LPARAM lParam) 
         for(size_t i=0;i<rows.size();++i) {
             RECT row{scaled(6,popupDpi),scaled(6+static_cast<int>(i)*30,popupDpi),rect.right-scaled(6,popupDpi),scaled(36+static_cast<int>(i)*30,popupDpi)};
             if(static_cast<int>(i)==highlight && rows[i].id)fill(dc,row,c.selected);
-            auto text=row;text.left+=scaled(27,popupDpi);label(dc,rows[i].title,text,popupDpi,rows[i].id?c.text:c.muted);
-            if(rows[i].checked){auto box=row;box.left+=scaled(8,popupDpi);box.right=box.left+scaled(14,popupDpi);label(dc,L"✓",box,popupDpi,c.accent);}
+            auto text=row;text.left+=scaled(27,popupDpi);label(dc,rows[i].title,text,popupDpi,rows[i].id?c.text:c.muted,DT_SINGLELINE|DT_VCENTER|DT_END_ELLIPSIS,popupFontPercent);
+            if(rows[i].checked){auto box=row;box.left+=scaled(8,popupDpi);box.right=box.left+scaled(18,popupDpi);label(dc,L"✓",box,popupDpi,c.accent,DT_SINGLELINE|DT_VCENTER,popupFontPercent);}
         }
         if(message==WM_PAINT){EndPaint(window,&paint);}
         return 0;
@@ -79,18 +79,18 @@ void initialize(HINSTANCE instance) {
 Tooltip::~Tooltip(){destroy();}
 void Tooltip::hide(){hoverSince_=0;if(window)ShowWindow(window,SW_HIDE);}
 void Tooltip::destroy(){if(window)DestroyWindow(window);window=nullptr;}
-void Tooltip::update(HWND owner,const std::wstring& text,RECT hoverBounds,int selectedTheme) {
+void Tooltip::update(HWND owner,const std::wstring& text,RECT hoverBounds,int selectedTheme,int selectedFontPercent) {
     POINT cursor{};GetCursorPos(&cursor);
     if(!IsWindowVisible(owner) || !PtInRect(&hoverBounds,cursor)){hide();return;}
     if(!hoverSince_){hoverSince_=GetTickCount64();return;}
     if(GetTickCount64()-hoverSince_<550)return;
-    int nextDpi=static_cast<int>(GetDpiForWindow(owner));bool changed=content!=text || theme!=selectedTheme || dpi!=nextDpi;content=text;theme=selectedTheme;dpi=nextDpi;
+    int nextDpi=static_cast<int>(GetDpiForWindow(owner));bool changed=content!=text || theme!=selectedTheme || dpi!=nextDpi || fontPercent!=selectedFontPercent;content=text;theme=selectedTheme;dpi=nextDpi;fontPercent=selectedFontPercent;
     if(!window) {
         window=CreateWindowExW(WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE|WS_EX_TOPMOST,L"GlimmerTooltip",L"",WS_POPUP,0,0,1,1,owner,nullptr,app,this);
         require(window!=nullptr,L"无法创建信息提示界面。");changed=true;
     }
     int width=scaled(330,dpi);MONITORINFO info{sizeof(info)};GetMonitorInfoW(MonitorFromWindow(owner,MONITOR_DEFAULTTONEAREST),&info);
-    HDC dc=GetDC(owner);auto font=CreateFontW(-scaled(12,dpi),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Microsoft YaHei UI");auto old=SelectObject(dc,font);
+    HDC dc=GetDC(owner);auto font=CreateFontW(-MulDiv(scaled(12,dpi),fontPercent,100),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Microsoft YaHei UI");auto old=SelectObject(dc,font);
     RECT measured{0,0,width-scaled(24,dpi),0};DrawTextW(dc,content.c_str(),-1,&measured,DT_CALCRECT|DT_WORDBREAK|DT_NOPREFIX);SelectObject(dc,old);DeleteObject(font);ReleaseDC(owner,dc);
     int height=(std::min)(static_cast<int>(measured.bottom)+scaled(20,dpi),static_cast<int>(info.rcWork.bottom-info.rcWork.top));
     int x=std::clamp(static_cast<int>(cursor.x)+scaled(10,dpi),static_cast<int>(info.rcWork.left),(std::max)(static_cast<int>(info.rcWork.left),static_cast<int>(info.rcWork.right)-width));
@@ -98,8 +98,8 @@ void Tooltip::update(HWND owner,const std::wstring& text,RECT hoverBounds,int se
     SetWindowPos(window,HWND_TOPMOST,x,y,width,height,SWP_NOACTIVATE|SWP_SHOWWINDOW);shape(window,dpi);if(changed)InvalidateRect(window,nullptr,FALSE);
 }
 
-void menu(HWND target,POINT point,const std::vector<MenuItem>& items,int theme) {
-    closeMenu();targetWindow=target;rows=items;popupTheme=theme;highlight=-1;popupDpi=static_cast<int>(GetDpiForWindow(target));
+void menu(HWND target,POINT point,const std::vector<MenuItem>& items,int theme,int fontPercent) {
+    closeMenu();targetWindow=target;rows=items;popupTheme=theme;popupFontPercent=fontPercent;highlight=-1;popupDpi=static_cast<int>(GetDpiForWindow(target));
     if(popupDpi==0)popupDpi=96;
     MONITORINFO info{sizeof(info)};GetMonitorInfoW(MonitorFromPoint(point,MONITOR_DEFAULTTONEAREST),&info);
     int width=scaled(230,popupDpi),height=scaled(12+static_cast<int>(rows.size())*30,popupDpi);
