@@ -6,6 +6,7 @@
 #include "taskbar_panel.hpp"
 #include "chrome.hpp"
 #include "ui.hpp"
+#include "startup.hpp"
 #include "filedialog_config.hpp"
 #include "../vendor/imgui/misc/cpp/imgui_stdlib.h"
 #include "../vendor/filedialog/ImGuiFileDialog.h"
@@ -23,7 +24,7 @@ constexpr UINT TrayMessage=WM_APP+1,ForegroundMessage=WM_APP+2,ShowRequest=WM_AP
 constexpr int AddId=101,SettingsId=104,HideId=105,ScheduleAddId=112,ScheduleSaveId=113,ViewFirstId=114;
 constexpr int PomoStartId=120,PomoResetId=121,PomoSkipId=122,PomoConfigId=123;
 constexpr int ThemeFirstId=500,MenuShow=301,MenuAuto=302,MenuTop=303,MenuSettings=304,MenuExit=305,MenuClear=306;
-constexpr int CollapseFirstId=320,BrowseId=206,ImportId=307,ImportSaveId=308,FontFirstId=520;
+constexpr int CollapseFirstId=320,BrowseId=206,ImportId=307,ImportSaveId=308,MenuStartup=309,FontFirstId=520;
 constexpr int FontPercentages[]={80,90,100,110,120,130,140,150};
 enum class WindowKind { Main,Settings,Schedule,Files,Import };
 
@@ -309,6 +310,8 @@ void toggleRow(const char* id,const char* title,const char* detail,bool& value,i
 }
 void drawSettings() {
     auxHeader(settingsWindow,"设置",nullptr);ImGui::BeginChild("##settingsBody",{0,0},ImGuiChildFlags_None);
+    bool startAtLogin=startup::enabled();toggleRow("##startup","开机自启","登录 Windows 后自动启动浮光",startAtLogin,MenuStartup);
+    ImGui::Spacing();
     ui::section("字体比例");int fontChoice=(state.fontPercent-80)/10;const char* fontLabels[]={"80%","90%","100%（默认）","110%","120%","130%","140%","150%"};ImGui::SetNextItemWidth(-1);
     if(ImGui::Combo("##fontPercent",&fontChoice,fontLabels,8))post(FontFirstId+fontChoice);
     ImGui::Spacing();
@@ -414,7 +417,7 @@ void CALLBACK desktopEvent(HWINEVENTHOOK,DWORD,HWND window,LONG,LONG,DWORD,DWORD
 void menu(HWND target) {
     POINT point{};GetCursorPos(&point);std::vector<chrome::MenuItem> items={{MenuShow,manuallyHidden?L"展开完整窗口":L"收起窗口"},{0,L"收起模式"}};
     for(int i=0;i<4;++i)items.push_back({CollapseFirstId+i,CollapseNames[i],static_cast<int>(state.collapseMode)==i});
-    items.push_back({MenuAuto,L"前台自动隐藏",state.automatic});items.push_back({MenuTop,L"保持窗口置顶",state.topmost});items.push_back({ImportId,L"批量导入任务"});items.push_back({MenuSettings,L"设置"});items.push_back({MenuClear,L"清理已完成待办"});items.push_back({MenuExit,L"退出浮光待办"});chrome::menu(target,point,items,state.theme,state.fontPercent);
+    items.push_back({MenuAuto,L"前台自动隐藏",state.automatic});items.push_back({MenuTop,L"保持窗口置顶",state.topmost});items.push_back({MenuStartup,L"开机自启",startup::enabled()});items.push_back({ImportId,L"批量导入任务"});items.push_back({MenuSettings,L"设置"});items.push_back({MenuClear,L"清理已完成待办"});items.push_back({MenuExit,L"退出浮光待办"});chrome::menu(target,point,items,state.theme,state.fontPercent);
 }
 void compactFonts() {
     for(auto font:{compactFont,compactSmallFont})if(font)DeleteObject(font);
@@ -516,6 +519,7 @@ void command(int id) {
     case PomoSkipId:state.pomodoro.skip();save();break;
     case PomoConfigId:if(state.pomodoro.configure(focusMinutes,shortMinutes,longMinutes)){taskError.clear();save();}else taskError="专注为 1–180 分钟，短休息为 1–60 分钟，长休息为 1–120 分钟。";break;
     case MenuAuto:state.automatic=!state.automatic;save();evaluateForeground();break;
+    case MenuStartup:startup::setEnabled(!startup::enabled());break;
     case MenuTop:state.topmost=!state.topmost;SetWindowPos(mainWindow,state.topmost?HWND_TOPMOST:HWND_NOTOPMOST,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);save();break;
     case MenuClear:std::erase_if(state.tasks,[](const Task& task){return task.done;});cancelEdit();save();break;
     case 600:if(selectedTaskId)removeTask(selectedTaskId);break;

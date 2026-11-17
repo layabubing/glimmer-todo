@@ -22,7 +22,7 @@ $vendorObjects = foreach ($source in $vendorSources) {
 }
 & ar rcs 'build\ui-vendor.a' @vendorObjects
 if ($LASTEXITCODE -ne 0) { throw '界面依赖归档失败' }
-$common = @('src\model.cpp','src\error.cpp','src\virtual_desktop.cpp','src\updater.cpp','src\taskbar_panel.cpp','src\chrome.cpp','src\ui.cpp','build\ui-vendor.a','build\app.res')
+$common = @('src\model.cpp','src\error.cpp','src\virtual_desktop.cpp','src\updater.cpp','src\startup.cpp','src\taskbar_panel.cpp','src\chrome.cpp','src\ui.cpp','build\ui-vendor.a','build\app.res')
 $libraries = @('-lshell32','-lole32','-ldwmapi','-luuid','-ladvapi32','-lwinhttp','-lbcrypt','-lshlwapi','-lgdi32','-ld3d11','-ldxgi','-ld3dcompiler','-limm32')
 & g++ @options '-mwindows' '-municode' 'src\app.cpp' @common '-o' 'build\GlimmerTodo.exe' @libraries '-Wl,--dynamicbase,--nxcompat'
 if ($LASTEXITCODE -ne 0) { throw '应用编译失败' }

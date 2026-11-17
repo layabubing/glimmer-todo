@@ -1,6 +1,7 @@
 #include "../src/app.cpp"
 #include <gdiplus.h>
 #include <iostream>
+#include <optional>
 
 namespace {
 int checks=0;
@@ -19,6 +20,22 @@ float renderedTextWidth() {
     if(view->begin(state.theme,state.fontPercent))drawMain();
     float width=ImGui::CalcTextSize("字体比例检查").x;
     view->end();return width;
+}
+std::optional<std::wstring> startupEntry() {
+    constexpr auto key=L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+    DWORD bytes=0;auto result=RegGetValueW(HKEY_CURRENT_USER,key,L"GlimmerTodo",RRF_RT_REG_SZ,nullptr,nullptr,&bytes);
+    require(result==ERROR_SUCCESS || result==ERROR_FILE_NOT_FOUND,L"无法读取自启检查前的设置。");
+    if(result==ERROR_FILE_NOT_FOUND)return std::nullopt;
+    std::wstring value(bytes/sizeof(wchar_t),L'\0');
+    require(RegGetValueW(HKEY_CURRENT_USER,key,L"GlimmerTodo",RRF_RT_REG_SZ,nullptr,value.data(),&bytes)==ERROR_SUCCESS,L"无法读取自启启动项。");
+    return std::wstring(value.c_str());
+}
+void restoreStartup(const std::optional<std::wstring>& original) {
+    if(!original){startup::setEnabled(false);return;}
+    HKEY key=nullptr;
+    require(RegCreateKeyExW(HKEY_CURRENT_USER,L"Software\\Microsoft\\Windows\\CurrentVersion\\Run",0,nullptr,0,KEY_SET_VALUE,nullptr,&key,nullptr)==ERROR_SUCCESS,L"无法恢复自启设置。");
+    auto result=RegSetValueExW(key,L"GlimmerTodo",0,REG_SZ,reinterpret_cast<const BYTE*>(original->c_str()),static_cast<DWORD>((original->size()+1)*sizeof(wchar_t)));RegCloseKey(key);
+    require(result==ERROR_SUCCESS,L"无法恢复自启启动项。");
 }
 void noNativeControls(HWND window) {
     int count=0;EnumChildWindows(window,[](HWND child,LPARAM value)->BOOL {
@@ -48,6 +65,15 @@ int main() {
     std::filesystem::create_directories(std::filesystem::current_path()/L".work"/L"ui-renders");
     Gdiplus::GdiplusStartupInput startup;ULONG_PTR token=0;check(Gdiplus::GdiplusStartup(&token,&startup,nullptr)==Gdiplus::Ok,"initialize image output");
     state=State{};state.automatic=false;state.x=40;state.y=40;initializeWindows();ready=true;applyVisibility();frames();noNativeControls(mainWindow);noNativeControls(compactWindow);
+    auto originalStartup=startupEntry();startup::setEnabled(false);bool disabledBefore=!startup::enabled();
+    menu(mainWindow);for(int index=0;index<8;++index)SendMessageW(chrome::menuWindow(),WM_KEYDOWN,VK_DOWN,0);
+    SendMessageW(chrome::menuWindow(),WM_KEYDOWN,VK_RETURN,0);pump();bool enabledFromMenu=startup::enabled();auto registeredStartup=startupEntry();
+    command(MenuStartup);bool disabledFromCommand=!startup::enabled() && !startupEntry().has_value();restoreStartup(originalStartup);
+    wchar_t startupProgram[32768]{};GetModuleFileNameW(nullptr,startupProgram,static_cast<DWORD>(std::size(startupProgram)));
+    check(disabledBefore && enabledFromMenu,"custom tray menu enables real Windows startup registration");
+    check(registeredStartup==std::optional<std::wstring>(L"\""+std::wstring(startupProgram)+L"\""),"startup registration contains quoted executable path");
+    check(disabledFromCommand,"shared settings action removes Windows startup registration");
+    check(startupEntry()==originalStartup,"restore original startup preference after checks");
     taskInput="整理今天的想法 📝";check(submitTask(),"create task through UI action");auto first=state.tasks.front().id;
     taskInput="为专注留出半个小时";check(submitTask(),"create second task");state.toggleTask(first);save();
     taskInput="确认下一个日程";check(submitTask(),"create third task for compact list");
