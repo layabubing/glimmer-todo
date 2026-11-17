@@ -13,6 +13,16 @@ void check(bool condition, const char* message) {
 
 int main() {
     State state;
+    State imported;imported.addTask(L"已有任务");auto initialId=imported.nextId;
+    auto batch=imported.importTasks(L"  第一条任务 \r\n\n\t\r\n第二条任务 📝\n第一条任务\n");
+    check(batch.added==3 && batch.invalidLine==0 && imported.tasks.size()==4,"batch import ignores blank lines and retains duplicates");
+    check(imported.tasks[1].text==L"第一条任务" && imported.tasks[2].text==L"第二条任务 📝" && !imported.tasks[3].done,"batch import preserves Unicode, order and pending status");
+    check(imported.tasks[1].id==initialId && imported.tasks[3].id==initialId+2,"batch import allocates consecutive ids");
+    auto beforeInvalid=imported.nextId;
+    auto invalidBatch=imported.importTasks(L"正常任务\n\n"+std::wstring(501,L'字')+L"\n最后一条");
+    check(invalidBatch.added==0 && invalidBatch.invalidLine==3 && imported.tasks.size()==4 && imported.nextId==beforeInvalid,"invalid batch reports source line without partial import");
+    check(imported.importTasks(L"\r\n \t\n").added==0 && imported.tasks.size()==4,"empty batch changes nothing");
+    check(imported.importTasks(std::wstring(500,L'字')).added==1,"batch accepts task length boundary");
     check(state.matches(L"CS2.EXE"), "CS2 detection");
     check(state.matches(L"C:\\Games\\csgo.exe"), "CSGO detection");
     check(state.matches(L"hl.exe"), "CS 1.6 detection");
@@ -50,6 +60,8 @@ int main() {
     state.x=100;state.y=200;state.width=400;state.height=600;state.topmost=false;
     auto directory=std::filesystem::current_path()/L".work"/L"model-tests";
     auto file=directory/L"state.json";
+    imported.fontPercent=150;imported.save(directory/L"imported.json");State restoredImport;restoredImport.load(directory/L"imported.json");
+    check(restoredImport.tasks.size()==5 && restoredImport.tasks[2].text==L"第二条任务 📝" && restoredImport.fontPercent==150,"batch tasks and font proportion survive restart");
     state.save(file);
     State loaded;loaded.load(file);
     check(loaded.tasks.size()==2, "persist task count");
@@ -59,9 +71,10 @@ int main() {
     check(loaded.matches(L"NOTEPAD.EXE"), "persist custom rule");
     check(!loaded.topmost && loaded.x==100 && loaded.y==200 && loaded.width==400 && loaded.height==600, "persist window preferences");
     auto previousLayout=directory/L"previous-layout.json";
-    {std::ifstream input(file);auto data=nlohmann::json::parse(input);data["layoutVersion"]=3;data["window"]["width"]=300;data["window"]["height"]=380;std::ofstream output(previousLayout);output<<data;}
+    {std::ifstream input(file);auto data=nlohmann::json::parse(input);data.erase("fontPercent");data["layoutVersion"]=3;data["window"]["width"]=300;data["window"]["height"]=380;std::ofstream output(previousLayout);output<<data;}
     State migrated;migrated.load(previousLayout);
     check(migrated.width==260 && migrated.height==300,"apply compact dimensions when upgrading layout");
+    check(migrated.fontPercent==100,"existing data uses default font proportion");
     check(migrated.x==100 && migrated.y==200 && migrated.tasks[0].text==loaded.tasks[0].text && migrated.rules.size()==loaded.rules.size(),"preserve position and data when upgrading layout");
     migrated.width=320;migrated.height=360;migrated.save(previousLayout);State resized;resized.load(previousLayout);
     check(resized.width==320 && resized.height==360,"preserve user dimensions after layout upgrade");

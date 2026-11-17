@@ -4,6 +4,7 @@
 #include <cwctype>
 #include <ctime>
 #include <chrono>
+#include <sstream>
 
 using nlohmann::json;
 
@@ -140,6 +141,22 @@ bool State::addTask(const std::wstring& value) {
     return true;
 }
 
+TaskImportResult State::importTasks(const std::wstring& value) {
+    std::wistringstream input(value);
+    std::vector<std::wstring> pending;
+    std::wstring line;
+    size_t lineNumber = 0;
+    while (std::getline(input, line)) {
+        ++lineNumber;
+        auto text = trim(line);
+        if (text.size() > 500) return {0, lineNumber};
+        if (!text.empty()) pending.push_back(std::move(text));
+    }
+    tasks.reserve(tasks.size() + pending.size());
+    for (auto& text : pending) tasks.push_back({nextId++, std::move(text), false});
+    return {pending.size(), 0};
+}
+
 bool State::editTask(uint64_t id, const std::wstring& value) {
     auto text = trim(value);
     if (text.empty() || text.size() > 500) return false;
@@ -235,6 +252,8 @@ void State::load(const std::filesystem::path& file) {
     topmost = root.at("topmost").get<bool>();
     theme = root.value("theme", 0);
     require(theme >= 0 && theme <= 2, L"主题设置无效。");
+    fontPercent = root.value("fontPercent", 100);
+    require(fontPercent >= 80 && fontPercent <= 150, L"字体比例设置无效。");
     int collapse = root.value("collapseMode", 0);
     require(collapse >= 0 && collapse <= 3, L"收起模式无效。");
     collapseMode = static_cast<CollapseMode>(collapse);
@@ -250,7 +269,7 @@ void State::load(const std::filesystem::path& file) {
 }
 
 void State::save(const std::filesystem::path& file) const {
-    json root{{"version", 1}, {"layoutVersion", 4}, {"automatic", automatic}, {"topmost", topmost}, {"theme", theme},
+    json root{{"version", 1}, {"layoutVersion", 4}, {"automatic", automatic}, {"topmost", topmost}, {"theme", theme}, {"fontPercent", fontPercent},
         {"collapseMode", static_cast<int>(collapseMode)}, {"capsuleX", capsuleX}, {"capsuleY", capsuleY},
         {"window", {{"x", x}, {"y", y}, {"width", width}, {"height", height}}},
         {"tasks", json::array()}, {"rules", json::array()}, {"schedules", json::array()}};

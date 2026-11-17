@@ -12,6 +12,11 @@ struct Task {
     bool done;
 };
 
+struct TaskImportResult {
+    size_t added = 0;
+    size_t invalidLine = 0;
+};
+
 struct Rule {
     std::wstring label;
     std::wstring exe;
@@ -63,6 +68,7 @@ struct State {
     bool automatic = true;
     bool topmost = true;
     int theme = 0;
+    int fontPercent = 100;
     CollapseMode collapseMode = CollapseMode::Capsule;
     int capsuleX = -1, capsuleY = -1;
     int x = -1, y = -1, width = 260, height = 300;
@@ -70,6 +76,7 @@ struct State {
 
     State();
     bool addTask(const std::wstring& text);
+    TaskImportResult importTasks(const std::wstring& text);
     bool editTask(uint64_t id, const std::wstring& text);
     void toggleTask(uint64_t id);
     void removeTask(uint64_t id);
