@@ -8,6 +8,7 @@
 #include "ui.hpp"
 #include "startup.hpp"
 #include "filedialog_config.hpp"
+#include "../vendor/imgui/imgui_internal.h"
 #include "../vendor/imgui/misc/cpp/imgui_stdlib.h"
 #include "../vendor/filedialog/ImGuiFileDialog.h"
 #include <windowsx.h>
@@ -26,6 +27,7 @@ constexpr int PomoStartId=120,PomoResetId=121,PomoSkipId=122,PomoConfigId=123;
 constexpr int ThemeFirstId=500,MenuShow=301,MenuAuto=302,MenuTop=303,MenuSettings=304,MenuExit=305,MenuClear=306;
 constexpr int CollapseFirstId=320,BrowseId=206,ImportId=307,ImportSaveId=308,MenuStartup=309,FontFirstId=520;
 constexpr int FontPercentages[]={80,90,100,110,120,130,140,150};
+constexpr const char* TaskPriorityNames[]={"低", "普通", "高"};
 enum class WindowKind { Main,Settings,Schedule,Files,Import };
 
 HINSTANCE instance;
@@ -44,7 +46,10 @@ double navigationPosition=0,navigationFrom=0;
 int contentOffset=0;
 uint64_t editingId=0,selectedTaskId=0,selectedScheduleId=0,scheduleEditingId=0,pendingScheduleId=0;
 bool focusTaskInput=false,installConfirmation=false;
-std::string taskInput,ruleInput,editorText,taskError,settingsError,scheduleError;
+std::string taskInput,ruleInput,editorText,taskError,taskOptionsError,timerError,settingsError,scheduleError;
+TaskDetails taskDetails;
+int taskPriority=0,taskYear=0,taskMonth=0,taskDay=0;
+bool taskHasDueDate=false;
 std::string importText,importError;
 bool focusImportInput=false;
 int editorYear=2026,editorMonth=1,editorDay=1,editorHour=9,editorMinute=0,editorRepeat=0;
@@ -101,9 +106,10 @@ void animateView() {
     double progress=transitionProgress(GetTickCount64()-transitionStarted);navigationPosition=navigationFrom+(activeView-navigationFrom)*progress;contentOffset=static_cast<int>(7*(1-progress));
     if(progress>=1){transitionStarted=0;contentOffset=0;}
 }
-void cancelEdit(){editingId=0;taskInput.clear();taskError.clear();}
+void cancelEdit(){editingId=0;taskInput.clear();taskError.clear();taskDetails={};}
 bool submitTask() {
-    auto value=wide(taskInput);bool changed=editingId?state.editTask(editingId,value):state.addTask(value);
+    auto value=wide(taskInput);
+    bool changed=editingId?state.editTask(editingId,value,taskDetails):state.addTask(value,taskDetails);
     if(!changed){taskError="请填写待办内容，最多 500 个字符。";return false;}
     save();cancelEdit();focusTaskInput=true;return true;
 }
@@ -114,7 +120,10 @@ bool submitImport() {
     save();importText.clear();importError.clear();selectView(0);return true;
 }
 void editTask(uint64_t id) {
-    for(const auto& task:state.tasks)if(task.id==id){editingId=id;selectedTaskId=id;taskInput=str(task.text);taskError.clear();focusTaskInput=true;return;}
+    if(const auto* task=state.findTask(id)) {
+        editingId=id;selectedTaskId=id;taskInput=str(task->text);taskDetails=task->details;
+        taskError.clear();focusTaskInput=true;
+    }
 }
 void removeTask(uint64_t id){if(editingId==id)cancelEdit();state.removeTask(id);if(selectedTaskId==id)selectedTaskId=0;save();}
 bool addRule(const std::wstring& path) {
@@ -195,44 +204,104 @@ void emptyState(const char* title,const char* subtitle,ui::Icon kind) {
     ImGui::PushFont(nullptr,11);width=ImGui::CalcTextSize(subtitle).x;ImGui::SetCursorPosX((ImGui::GetWindowWidth()-width)/2);ui::muted(subtitle);ImGui::PopFont();
 }
 
-void drawTaskRow(const Task& task) {
+void drawTaskRow(const Task& task,int today) {
     ImGui::PushID(static_cast<int>(task.id));auto origin=ImGui::GetCursorScreenPos();float width=ImGui::GetContentRegionAvail().x;const auto& c=ui::palette();auto draw=ImGui::GetWindowDrawList();
-    auto background=selectedTaskId==task.id?c.selected:c.surface;draw->AddRectFilled(origin,{origin.x+width,origin.y+ui::p(32)},ui::ink(background),ui::p(6));draw->AddRect(origin,{origin.x+width,origin.y+ui::p(32)},ui::ink(selectedTaskId==task.id?c.accent:c.border),ui::p(6));
+    const std::string priority=std::string("优先级 ")+TaskPriorityNames[static_cast<int>(task.details.priority)];
+    int due=task.details.dueDate;
+    bool overdue=!task.done && due && due<today;
+    char dueLabel[40]{};
+    if(due)snprintf(dueLabel,sizeof(dueLabel),"%s %04d-%02d-%02d",overdue?"逾期":"截止",due/10000,due/100%100,due%100);
+    float titleHeight=ImGui::GetFontSize();
+    float textWidth=width-ui::p(59);
+    ImGui::PushFont(nullptr,10);
+    float metaHeight=ImGui::GetFontSize();
+    float dueOffset=ImGui::CalcTextSize(priority.c_str()).x+ui::p(8);
+    bool wrapDate=due && dueOffset+ImGui::CalcTextSize(dueLabel).x>textWidth;
+    ImGui::PopFont();
+    float rowHeight=ui::p(14)+titleHeight+metaHeight*(wrapDate?2:1);
+    auto background=selectedTaskId==task.id?c.selected:c.surface;
+    ImVec2 rowEnd{origin.x+width,origin.y+rowHeight};
+    draw->AddRectFilled(origin,rowEnd,ui::ink(background),ui::p(6));
+    draw->AddRect(origin,rowEnd,ui::ink(selectedTaskId==task.id?c.accent:c.border),ui::p(6));
     ImGui::SetCursorScreenPos({origin.x+ui::p(5),origin.y+ui::p(6)});bool checked=task.done;
     if(ImGui::InvisibleButton("##check",ui::size(20,20),ImGuiButtonFlags_EnableNav)){state.toggleTask(task.id);save();}
     auto box=ImGui::GetItemRectMin();draw->AddCircle({box.x+ui::p(10),box.y+ui::p(10)},ui::p(8),ui::ink(checked?c.accent:c.border),20,ui::p(1.4f));
     if(checked){draw->AddCircleFilled({box.x+ui::p(10),box.y+ui::p(10)},ui::p(8),ui::ink(c.accent));ui::icon(draw,ui::Icon::Check,{box.x+ui::p(10),box.y+ui::p(10)},5,ui::ink(c.onAccent));}
     ImGui::SetCursorScreenPos({origin.x+ui::p(31),origin.y+ui::p(3)});ImGui::PushStyleColor(ImGuiCol_Header,ui::color(background));
-    bool selected=ImGui::Selectable("##task",false,ImGuiSelectableFlags_AllowDoubleClick,{width-ui::p(59),ui::p(26)});ImGui::PopStyleColor();
+    bool selected=ImGui::Selectable("##task",false,ImGuiSelectableFlags_AllowDoubleClick,{textWidth,rowHeight-ui::p(6)});ImGui::PopStyleColor();
     if(selected)selectedTaskId=task.id;
     if((ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0)) || (ImGui::IsItemFocused() && (ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_F2))))editTask(task.id);
     if(ImGui::IsItemFocused() && ImGui::IsKeyPressed(ImGuiKey_Space)){state.toggleTask(task.id);save();}
-    auto value=str(task.text);if(ImGui::IsItemHovered())ImGui::SetTooltip("%s",value.c_str());
-    ImVec2 min{origin.x+ui::p(31),origin.y+(ui::p(32)-ImGui::GetFontSize())/2},max{origin.x+width-ui::p(28),origin.y+ui::p(29)};
+    auto value=str(task.text);
+    bool bound=state.pomodoro.taskId==task.id;
+    if(ImGui::IsItemHovered())ImGui::SetTooltip("%s\n%s%s%s%s",value.c_str(),priority.c_str(),due?" · ":"",dueLabel,bound?"\n番茄钟已绑定":"");
+    ImVec2 min{origin.x+ui::p(31),origin.y+ui::p(5)},max{origin.x+width-ui::p(28),rowEnd.y-ui::p(3)};
     draw->PushClipRect(min,max,true);draw->AddText(min,ui::ink(task.done?c.muted:c.text),value.c_str());
     if(task.done){draw->AddLine({min.x,min.y+ImGui::GetFontSize()/2},{(std::min)(max.x,min.x+ImGui::CalcTextSize(value.c_str()).x),min.y+ImGui::GetFontSize()/2},ui::ink(c.muted));}
+    ImGui::PushFont(nullptr,10);
+    float metaY=min.y+titleHeight+ui::p(3);
+    draw->AddText({min.x,metaY},ui::ink(task.details.priority==TaskPriority::High && !task.done?c.accent:c.muted),priority.c_str());
+    if(due)draw->AddText({min.x+(wrapDate?0:dueOffset),metaY+(wrapDate?metaHeight:0)},ui::ink(overdue?c.accent:c.muted),dueLabel);
+    ImGui::PopFont();
     draw->PopClipRect();
     ImGui::SetCursorScreenPos({origin.x+width-ui::p(25),origin.y+ui::p(5)});if(ui::iconButton("##remove",ui::Icon::Close,"删除待办",false,22)){selectedTaskId=task.id;post(600);}
-    ImGui::SetCursorScreenPos({origin.x,origin.y+ui::p(32)});ImGui::Dummy({width,0});ImGui::PopID();
+    if(bound)ui::icon(draw,ui::Icon::Timer,{origin.x+ui::p(15),metaY+metaHeight/2},6,ui::ink(c.accent));
+    ImGui::SetCursorScreenPos({origin.x,rowEnd.y});ImGui::Dummy({width,0});ImGui::PopID();
+}
+
+void openTaskOptions() {
+    taskPriority=static_cast<int>(taskDetails.priority);
+    taskHasDueDate=taskDetails.dueDate!=0;
+    int date=taskHasDueDate?taskDetails.dueDate:localDate(nowSeconds());
+    taskYear=date/10000;taskMonth=date/100%100;taskDay=date%100;
+    taskOptionsError.clear();
+    ImGui::OpenPopup("##taskOptions");
+}
+
+bool applyTaskOptions() {
+    int date=taskHasDueDate?taskDueDate(taskYear,taskMonth,taskDay):0;
+    if(taskHasDueDate && !date){taskOptionsError="请填写有效的截止日期。";return false;}
+    taskDetails={static_cast<TaskPriority>(taskPriority),date};
+    return true;
+}
+
+void drawTaskOptions() {
+    ImGui::SetNextWindowSizeConstraints(ui::size(210,0),ui::size(230,300));
+    if(!ImGui::BeginPopup("##taskOptions"))return;
+    ui::muted("优先级");ImGui::SetNextItemWidth(-1);
+    ImGui::Combo("##priority",&taskPriority,TaskPriorityNames,static_cast<int>(std::size(TaskPriorityNames)));
+    ImGui::Checkbox("设置截止日期",&taskHasDueDate);
+    if(taskHasDueDate) {
+        int* fields[]={&taskYear,&taskMonth,&taskDay};
+        const char* labels[]={"年份","月份","日期"};
+        numberFields("taskDueDate",labels,fields,3);
+    }
+    errorText(taskOptionsError);
+    if(ui::button("确定",{ImGui::GetContentRegionAvail().x,0},true) && applyTaskOptions())ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
 }
 void drawTasks() {
     float rowHeight=(std::max)(ui::p(26),ImGui::GetFrameHeight());
     float errorHeight=taskError.empty()?0:ImGui::CalcTextSize(taskError.c_str(),nullptr,false,ImGui::GetContentRegionAvail().x).y+ImGui::GetStyle().ItemSpacing.y;
     float listHeight=(std::max)(ui::p(32),ImGui::GetContentRegionAvail().y-rowHeight-ImGui::GetStyle().ItemSpacing.y-errorHeight);ImGui::PushStyleColor(ImGuiCol_ChildBg,ui::color(ui::palette().background));ImGui::BeginChild("##tasks",{0,listHeight},ImGuiChildFlags_None);
     if(state.tasks.empty())emptyState("给今天留一点空间","在下方记录下一件事",ui::Icon::Check);
-    for(const auto& task:state.tasks)drawTaskRow(task);
+    int today=localDate(nowSeconds());
+    for(const auto& task:state.tasks)drawTaskRow(task,today);
     if(ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) && !ImGui::GetIO().WantTextInput && ImGui::IsKeyPressed(ImGuiKey_Delete) && selectedTaskId)post(600);
     ImGui::EndChild();ImGui::PopStyleColor();errorText(taskError);
     bool cancel=ImGui::IsKeyPressed(ImGuiKey_Escape) && !ImGui::IsPopupOpen(nullptr,ImGuiPopupFlags_AnyPopupId|ImGuiPopupFlags_AnyPopupLevel);
     if(focusTaskInput){ImGui::SetKeyboardFocusHere();focusTaskInput=false;}
     float addWidth=(std::max)(ui::p(editingId?42:28),ImGui::CalcTextSize(editingId?"保存":"＋").x+ImGui::GetStyle().FramePadding.x*2);
     float importWidth=ImGui::CalcTextSize("导入").x+ImGui::GetStyle().FramePadding.x*2;
-    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x-addWidth-importWidth-ui::p(12));
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x-addWidth-importWidth-rowHeight-ui::p(18));
     if(ImGui::InputTextWithHint("##taskInput",editingId?"编辑待办，Escape 取消":"记录下一件事…",&taskInput,ImGuiInputTextFlags_EnterReturnsTrue))submitTask();
     if(cancel)cancelEdit();
     ImGui::SameLine(0,ui::p(6));if(ui::button(editingId?"保存":"＋",{addWidth,rowHeight},true))submitTask();
+    ImGui::SameLine(0,ui::p(6));
+    if(ui::iconButton("##taskDetails",ui::Icon::Calendar,"优先级与截止日期",taskDetails.priority!=TaskPriority::Normal || taskDetails.dueDate!=0,rowHeight/ui::scale()))openTaskOptions();
     ImGui::SameLine(0,ui::p(6));if(ui::button("导入",{importWidth,rowHeight}))post(ImportId);
     if(ImGui::IsItemHovered())ImGui::SetTooltip("批量导入任务（Ctrl+I）");
+    drawTaskOptions();
 }
 
 void drawScheduleRow(const Schedule& event) {
@@ -257,6 +326,40 @@ void drawSchedules() {
     ImGui::EndChild();ImGui::PopStyleColor();if(ui::button("＋  新增日程",{ImGui::GetContentRegionAvail().x,ui::p(26)},true)){pendingScheduleId=0;post(ScheduleAddId);}
 }
 
+void drawPomodoroTask() {
+    auto& timer=state.pomodoro;
+    const auto* bound=state.findTask(timer.taskId);
+    std::string preview=bound?"任务 · "+str(bound->text):"绑定待办任务";
+    ImGui::SetNextItemWidth(-1);
+    auto flags=static_cast<ImGuiComboFlags>(ImGuiComboFlags_CustomPreview)|ImGuiComboFlags_HeightLarge;
+    if(ImGui::BeginCombo("##pomodoroTask",nullptr,flags)) {
+        if(ImGui::Selectable("不绑定任务",!bound) && state.bindPomodoroTask(0))save();
+        if(!bound)ImGui::SetItemDefaultFocus();
+        for(const auto& task:state.tasks) {
+            if(task.done)continue;
+            auto id=std::to_string(task.id);
+            ImGui::PushID(id.c_str());
+            bool selected=task.id==timer.taskId;
+            auto pos=ImGui::GetCursorScreenPos();
+            if(ImGui::Selectable("##task",selected,0,{0,ImGui::GetTextLineHeight()}) && state.bindPomodoroTask(task.id))save();
+            auto title=str(task.text);
+            auto* draw=ImGui::GetWindowDrawList();
+            draw->PushClipRect(pos,ImGui::GetItemRectMax(),true);
+            draw->AddText(pos,ui::ink(ui::palette().text),title.c_str());
+            draw->PopClipRect();
+            if(ImGui::IsItemHovered())ImGui::SetTooltip("%s",title.c_str());
+            if(selected)ImGui::SetItemDefaultFocus();
+            ImGui::PopID();
+        }
+        ImGui::EndCombo();
+    }
+    if(ImGui::IsItemHovered() && bound)ImGui::SetTooltip("%s",preview.c_str());
+    if(ImGui::BeginComboPreview()) {
+        ImGui::TextUnformatted(preview.c_str());
+        ImGui::EndComboPreview();
+    }
+}
+
 void drawPomodoro() {
     auto& timer=state.pomodoro;int seconds=timer.secondsLeft(nowSeconds());char clock[32]{};snprintf(clock,sizeof(clock),"%02d:%02d",seconds/60,seconds%60);
     ImGui::BeginChild("##focusBody",{0,0},ImGuiChildFlags_None);ui::card("##clock",ui::size(0,(std::max)(104.0f,55.0f*state.fontPercent/100+49)));
@@ -272,11 +375,12 @@ void drawPomodoro() {
     if(ImGui::IsItemHovered())ImGui::SetTooltip("%s",action);
     ImGui::SameLine();if(ui::button("重置",{third,ui::p(26)})){post(PomoResetId);}
     ImGui::SameLine();if(ui::button("跳过",{third,ui::p(26)})){post(PomoSkipId);}
+    drawPomodoroTask();
     if(ImGui::CollapsingHeader("计时设置")) {
         ui::muted("各阶段时长（分钟）");ImGui::BeginDisabled(timer.running);
         int* values[]={&focusMinutes,&shortMinutes,&longMinutes};const char* names[]={"专注","短休息","长休息"};numberFields("durations",names,values,3);
         if(ui::button("保存时长",{ImGui::GetContentRegionAvail().x,0})){post(PomoConfigId);}
-        ImGui::EndDisabled();errorText(taskError);
+        ImGui::EndDisabled();errorText(timerError);
     }
     ImGui::EndChild();
 }
@@ -517,7 +621,7 @@ void command(int id) {
     case PomoStartId:state.pomodoro.toggle(nowSeconds());save();break;
     case PomoResetId:state.pomodoro.reset();save();break;
     case PomoSkipId:state.pomodoro.skip();save();break;
-    case PomoConfigId:if(state.pomodoro.configure(focusMinutes,shortMinutes,longMinutes)){taskError.clear();save();}else taskError="专注为 1–180 分钟，短休息为 1–60 分钟，长休息为 1–120 分钟。";break;
+    case PomoConfigId:if(state.pomodoro.configure(focusMinutes,shortMinutes,longMinutes)){timerError.clear();save();}else timerError="专注为 1–180 分钟，短休息为 1–60 分钟，长休息为 1–120 分钟。";break;
     case MenuAuto:state.automatic=!state.automatic;save();evaluateForeground();break;
     case MenuStartup:startup::setEnabled(!startup::enabled());break;
     case MenuTop:state.topmost=!state.topmost;SetWindowPos(mainWindow,state.topmost?HWND_TOPMOST:HWND_NOTOPMOST,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);save();break;

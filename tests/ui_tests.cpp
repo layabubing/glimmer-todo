@@ -15,6 +15,17 @@ void pump() {
 void frames(int count=2) {
     for(int index=0;index<count;++index){pump();renderWindows();Sleep(18);}
 }
+void activateMainItem(ImGuiID id) {
+    surface(mainWindow)->select();
+    ImGui::ActivateItemByID(id);
+    frames(3);
+}
+ImGuiWindow* mainPopup() {
+    surface(mainWindow)->select();
+    auto& popups=ImGui::GetCurrentContext()->OpenPopupStack;
+    check(!popups.empty() && popups.back().Window,"show popup for selected control");
+    return popups.back().Window;
+}
 float renderedTextWidth() {
     auto view=surface(mainWindow);
     if(view->begin(state.theme,state.fontPercent))drawMain();
@@ -113,7 +124,43 @@ int main() {
     check(!saveSchedule() && !scheduleError.empty(),"invalid calendar date stays in custom editor");
     editorDay=28;editorHour=9;editorMinute=30;editorRepeat=2;check(saveSchedule(),"save calendar date through custom editor");DestroyWindow(scheduleWindow);
     auto edited=state.schedules.front().id;openSchedule(edited);editorText="更新安排";check(saveSchedule(),"edit schedule through custom editor");DestroyWindow(scheduleWindow);
+    selectView(0);frames(12);
+    auto priorityTaskId=state.tasks[1].id;
+    editTask(priorityTaskId);frames();
+    surface(mainWindow)->select();
+    auto* root=ImGui::FindWindowByName("##surface");
+    activateMainItem(root->GetID("##taskDetails"));
+    auto* options=mainPopup();
+    activateMainItem(options->GetID("##priority"));
+    auto highPriorityScope=mainPopup()->GetID(static_cast<int>(TaskPriority::High));
+    activateMainItem(ImHashStr("高",0,highPriorityScope));
+    activateMainItem(options->GetID("设置截止日期"));
+    check(taskHasDueDate && taskPriority==static_cast<int>(TaskPriority::High),"select priority and enable the date from task options");
+    taskYear=2028;taskMonth=2;taskDay=30;
+    activateMainItem(options->GetID("确定"));
+    check(!taskOptionsError.empty() && taskDetails.dueDate==0,"invalid deadline remains in the options popup");
+    snapshot(mainWindow,L"task-options");
+    taskDay=29;activateMainItem(options->GetID("确定"));
+    activateMainItem(root->GetID("保存"));
+    check(state.tasks.front().id==priorityTaskId && state.tasks.front().details.dueDate==20280229,"save task details and reorder the displayed list");
+    selectView(2);frames(12);
+    surface(mainWindow)->select();
+    auto focusBodyId=root->GetID("##focusBody");
+    ImGuiWindow* focusBody=nullptr;
+    for(auto* window:ImGui::GetCurrentContext()->Windows)if(window->ChildId==focusBodyId)focusBody=window;
+    check(focusBody!=nullptr,"show focus page controls");
+    auto comboId=focusBody->GetID("##pomodoroTask");
+    activateMainItem(comboId);
+    auto taskId=std::to_string(priorityTaskId);
+    auto taskScope=mainPopup()->GetID(taskId.c_str());
+    activateMainItem(ImHashStr("##task",0,taskScope));
+    check(state.pomodoro.taskId==priorityTaskId,"bind task from the focus page dropdown");
+    snapshot(mainWindow,L"focus-bound-task");
     focusMinutes=30;shortMinutes=6;longMinutes=20;command(PomoConfigId);check(state.pomodoro.focusMinutes==30,"configure focus through UI action");command(PomoStartId);check(state.pomodoro.running,"start focus");command(PomoStartId);check(!state.pomodoro.running,"pause focus");command(PomoResetId);
+    check(state.pomodoro.taskId==priorityTaskId,"keep task binding through start, pause and reset");
+    activateMainItem(comboId);
+    activateMainItem(mainPopup()->GetID("不绑定任务"));
+    check(state.pomodoro.taskId==0,"unbind from the focus page dropdown");
     check(addRule(L"C:\\Windows\\System32\\notepad.exe"),"custom executable rule");check(!addRule(L"notepad.exe"),"duplicate rule displays inline validation");settingsError.clear();
     RECT normal{};GetWindowRect(mainWindow,&normal);
     for(int mode=0;mode<4;++mode) {
