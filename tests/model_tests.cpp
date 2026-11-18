@@ -71,10 +71,20 @@ int main() {
     check(loaded.matches(L"NOTEPAD.EXE"), "persist custom rule");
     check(!loaded.topmost && loaded.x==100 && loaded.y==200 && loaded.width==400 && loaded.height==600, "persist window preferences");
     auto previousLayout=directory/L"previous-layout.json";
-    {std::ifstream input(file);auto data=nlohmann::json::parse(input);data.erase("fontPercent");data["layoutVersion"]=3;data["window"]["width"]=300;data["window"]["height"]=380;std::ofstream output(previousLayout);output<<data;}
+    {
+        std::ifstream input(file);
+        auto data=nlohmann::json::parse(input);
+        data.erase("fontPercent");
+        for (auto& task : data["tasks"]) { task.erase("priority"); task.erase("dueDate"); }
+        data["pomodoro"].erase("taskId");
+        data["layoutVersion"]=3;data["window"]["width"]=300;data["window"]["height"]=380;
+        std::ofstream output(previousLayout);output<<data;
+    }
     State migrated;migrated.load(previousLayout);
     check(migrated.width==260 && migrated.height==300,"apply compact dimensions when upgrading layout");
     check(migrated.fontPercent==100,"existing data uses default font proportion");
+    check(migrated.tasks.front().details.priority==TaskPriority::Normal && migrated.tasks.front().details.dueDate==0
+        && migrated.pomodoro.taskId==0,"existing data has normal priority, no due date and no timer binding");
     check(migrated.x==100 && migrated.y==200 && migrated.tasks[0].text==loaded.tasks[0].text && migrated.rules.size()==loaded.rules.size(),"preserve position and data when upgrading layout");
     migrated.width=320;migrated.height=360;migrated.save(previousLayout);State resized;resized.load(previousLayout);
     check(resized.width==320 && resized.height==360,"preserve user dimensions after layout upgrade");
@@ -100,6 +110,33 @@ int main() {
         check(compact.collapseMode==state.collapseMode && compact.capsuleX==-320 && compact.capsuleY==64,"persist collapse mode and position");
     }
     auto now=nowSeconds();
+    State prioritized;
+    int leapDay=taskDueDate(2028,2,29);
+    check(leapDay==20280229 && taskDueDate(2027,2,29)==0 && taskDueDate(2028,1,257)==0,"validate civil due dates");
+    check(prioritized.addTask(L"普通任务") && prioritized.addTask(L"低优先级",{TaskPriority::Low,leapDay})
+        && prioritized.addTask(L"高优先级",{TaskPriority::High,leapDay}),"create tasks with priority and due date");
+    auto highId=prioritized.tasks.front().id;
+    auto normalId=prioritized.tasks[1].id;
+    auto lowId=prioritized.tasks.back().id;
+    check(prioritized.tasks.front().details.priority==TaskPriority::High && prioritized.tasks.back().details.priority==TaskPriority::Low,"sort by descending priority");
+    check(prioritized.editTask(normalId,L"提高优先级",TaskDetails{TaskPriority::High,leapDay})
+        && prioritized.tasks.front().id==normalId && prioritized.tasks[1].id==highId,"sort edited tasks by priority then creation order");
+    check(prioritized.importTasks(L"导入普通任务").added==1 && prioritized.tasks.back().id==lowId,"sort batch imports at normal priority");
+    check(!prioritized.editTask(normalId,L"无效日期",TaskDetails{TaskPriority::High,20280230})
+        && prioritized.tasks.front().text==L"提高优先级","reject invalid due date without changing task");
+    check(prioritized.bindPomodoroTask(normalId) && !prioritized.bindPomodoroTask(0xFFFF),"bind existing pending task and reject unknown tasks");
+    prioritized.pomodoro.toggle(now);
+    prioritized.save(directory/L"prioritized.json");
+    State restoredTasks;restoredTasks.load(directory/L"prioritized.json");
+    check(restoredTasks.tasks.front().details.dueDate==leapDay && restoredTasks.tasks.front().details.priority==TaskPriority::High
+        && restoredTasks.pomodoro.taskId==normalId && restoredTasks.pomodoro.running,"restore priority, due date and running bound timer");
+    check(restoredTasks.editTask(normalId,L"更新专注任务") && restoredTasks.tasks.front().details.dueDate==leapDay
+        && restoredTasks.compactInfo(now).details.find(L"更新专注任务")!=std::wstring::npos,"rename bound task while keeping its metadata");
+    restoredTasks.toggleTask(normalId);
+    check(restoredTasks.pomodoro.taskId==0 && restoredTasks.pomodoro.running && !restoredTasks.bindPomodoroTask(normalId),"completing a task unbinds it while the timer continues");
+    check(restoredTasks.bindPomodoroTask(highId),"switch the running timer to another pending task");
+    restoredTasks.removeTask(highId);
+    check(restoredTasks.pomodoro.taskId==0 && restoredTasks.pomodoro.running,"deleting the bound task preserves the countdown");
     State compact;
     check(compact.collapseMode==CollapseMode::Capsule && compact.compactInfo(now).tasks==L"待办 0/0" && compact.compactInfo(now).schedule==L"暂无日程","compact defaults");
     compact.addTask(L"准备资料");compact.addTask(L"完成记录");compact.toggleTask(compact.tasks.back().id);

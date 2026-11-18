@@ -30,11 +30,23 @@ std::wstring formatDate(int64_t timestamp) {
     return result;
 }
 
+int localDate(int64_t timestamp) {
+    auto local = localTime(timestamp);
+    return local.wYear * 10000 + local.wMonth * 100 + local.wDay;
+}
+
+int taskDueDate(int y, int m, int d) {
+    using namespace std::chrono;
+    if (y < 1 || y > 9999 || m < 1 || m > 12 || d < 1 || d > 31) return 0;
+    return year_month_day{year{y}, month{static_cast<unsigned>(m)}, day{static_cast<unsigned>(d)}}.ok()
+        ? y * 10000 + m * 100 + d : 0;
+}
+
 int Pomodoro::duration() const { return (phase == 0 ? focusMinutes : phase == 1 ? shortMinutes : longMinutes) * 60; }
 int Pomodoro::secondsLeft(int64_t now) const { return running ? static_cast<int>(std::clamp<int64_t>(deadline - now, 0, 180 * 60)) : remaining; }
 
 bool Pomodoro::tick(int64_t now) {
-    auto local = localTime(now); int today = local.wYear * 10000 + local.wMonth * 100 + local.wDay;
+    int today = localDate(now);
     bool changed = false;
     if (date != today) { date = today; todayCount = 0; changed = true; }
     if (!running || now < deadline) return changed;
@@ -134,10 +146,26 @@ State::State() : rules{
     {L"崩坏：星穹铁道", L"starrail.exe"}
 } {}
 
-bool State::addTask(const std::wstring& value) {
+namespace {
+bool validTaskDetails(TaskDetails details) {
+    int date = details.dueDate;
+    return details.priority >= TaskPriority::Low && details.priority <= TaskPriority::High
+        && (date == 0 || date == taskDueDate(date / 10000, date / 100 % 100, date % 100));
+}
+
+void sortTasks(std::vector<Task>& tasks) {
+    std::sort(tasks.begin(), tasks.end(), [](const Task& a, const Task& b) {
+        if (a.details.priority != b.details.priority) return a.details.priority > b.details.priority;
+        return a.id < b.id;
+    });
+}
+}
+
+bool State::addTask(const std::wstring& value, TaskDetails details) {
     auto text = trim(value);
-    if (text.empty() || text.size() > 500) return false;
-    tasks.push_back({nextId++, std::move(text), false});
+    if (text.empty() || text.size() > 500 || !validTaskDetails(details)) return false;
+    tasks.push_back({nextId++, std::move(text), false, details});
+    sortTasks(tasks);
     return true;
 }
 
@@ -154,24 +182,48 @@ TaskImportResult State::importTasks(const std::wstring& value) {
     }
     tasks.reserve(tasks.size() + pending.size());
     for (auto& text : pending) tasks.push_back({nextId++, std::move(text), false});
+    sortTasks(tasks);
     return {pending.size(), 0};
 }
 
-bool State::editTask(uint64_t id, const std::wstring& value) {
+const Task* State::findTask(uint64_t id) const {
+    auto it = std::find_if(tasks.begin(), tasks.end(), [id](const Task& task) { return task.id == id; });
+    return it == tasks.end() ? nullptr : &*it;
+}
+
+bool State::editTask(uint64_t id, const std::wstring& value, std::optional<TaskDetails> details) {
     auto text = trim(value);
-    if (text.empty() || text.size() > 500) return false;
+    if (text.empty() || text.size() > 500 || (details && !validTaskDetails(*details))) return false;
     auto it = std::find_if(tasks.begin(), tasks.end(), [id](const Task& task) { return task.id == id; });
     if (it == tasks.end()) return false;
     it->text = std::move(text);
+    if (details) {
+        it->details = *details;
+        sortTasks(tasks);
+    }
     return true;
 }
 
 void State::toggleTask(uint64_t id) {
-    for (auto& task : tasks) if (task.id == id) { task.done = !task.done; return; }
+    for (auto& task : tasks) if (task.id == id) {
+        task.done = !task.done;
+        if (task.done && pomodoro.taskId == id) pomodoro.taskId = 0;
+        return;
+    }
 }
 
 void State::removeTask(uint64_t id) {
     std::erase_if(tasks, [id](const Task& task) { return task.id == id; });
+    if (pomodoro.taskId == id) pomodoro.taskId = 0;
+}
+
+bool State::bindPomodoroTask(uint64_t id) {
+    if (id) {
+        const auto* task = findTask(id);
+        if (!task || task->done) return false;
+    }
+    pomodoro.taskId = id;
+    return true;
 }
 
 bool State::addRule(const std::wstring& value) {
@@ -208,6 +260,9 @@ CompactInfo State::compactInfo(int64_t now) const {
     swprintf_s(clock, L"%02d:%02d", seconds / 60, seconds % 60);
     info.timer = std::wstring(pomodoro.phase == 0 ? L"专注 " : pomodoro.phase == 1 ? L"短休息 " : L"长休息 ") + clock;
     info.details = info.tasks + L" · " + info.timer + (pomodoro.running ? L" · 进行中" : L" · 已暂停") + L"\n" + info.schedule;
+    if (pomodoro.taskId) {
+        if (const auto* task = findTask(pomodoro.taskId)) info.details += L"\n专注任务 · " + task->text;
+    }
     return info;
 }
 
@@ -221,12 +276,14 @@ void State::load(const std::filesystem::path& file) {
     rules.clear();
     nextId = 1;
     for (const auto& entry : root.at("tasks")) {
-        Task task{entry.at("id").get<uint64_t>(), wide(entry.at("text").get<std::string>()), entry.at("done").get<bool>()};
-        require(task.id > 0 && task.id < UINT64_MAX && !trim(task.text).empty() && task.text.size() <= 500, L"待办数据无效。");
+        Task task{entry.at("id").get<uint64_t>(), wide(entry.at("text").get<std::string>()), entry.at("done").get<bool>(),
+            {static_cast<TaskPriority>(entry.value("priority", static_cast<int>(TaskPriority::Normal))), entry.value("dueDate", 0)}};
+        require(task.id > 0 && task.id < UINT64_MAX && !trim(task.text).empty() && task.text.size() <= 500 && validTaskDetails(task.details), L"待办数据无效。");
         require(std::none_of(tasks.begin(), tasks.end(), [&](const Task& existing) { return existing.id == task.id; }), L"待办编号重复。");
         nextId = (std::max)(nextId, task.id + 1);
         tasks.push_back(std::move(task));
     }
+    sortTasks(tasks);
     for (const auto& entry : root.at("rules")) {
         Rule rule{wide(entry.at("label").get<std::string>()), normalizeExe(wide(entry.at("exe").get<std::string>())), entry.at("enabled").get<bool>()};
         require(addRule(rule.exe), L"软件规则数据无效。");
@@ -240,13 +297,14 @@ void State::load(const std::filesystem::path& file) {
         nextId = (std::max)(nextId, event.id + 1); schedules.push_back(std::move(event));
     }
     std::stable_sort(schedules.begin(), schedules.end(), [](const Schedule& a, const Schedule& b) { return a.due < b.due; });
+    pomodoro = Pomodoro{};
     if (root.contains("pomodoro")) {
         const auto& p = root.at("pomodoro");
-        pomodoro = Pomodoro{};
         require(pomodoro.configure(p.at("focusMinutes").get<int>(),p.at("shortMinutes").get<int>(),p.at("longMinutes").get<int>()),L"番茄钟时长无效。");
         pomodoro.phase=p.at("phase").get<int>(); pomodoro.cycle=p.at("cycle").get<int>(); pomodoro.todayCount=p.at("todayCount").get<int>(); pomodoro.date=p.at("date").get<int>();
         pomodoro.remaining=p.at("remaining").get<int>(); pomodoro.deadline=p.at("deadline").get<int64_t>(); pomodoro.running=p.at("running").get<bool>(); pomodoro.noticePending=p.at("noticePending").get<bool>();
         require(pomodoro.phase>=0 && pomodoro.phase<=2 && pomodoro.cycle>=0 && pomodoro.cycle<4 && pomodoro.todayCount>=0 && pomodoro.remaining>=0 && pomodoro.remaining<=10800 && (!pomodoro.running || pomodoro.deadline>0),L"番茄钟状态无效。");
+        require(bindPomodoroTask(p.value("taskId", uint64_t{0})), L"番茄钟绑定的待办无效。");
     }
     automatic = root.at("automatic").get<bool>();
     topmost = root.at("topmost").get<bool>();
@@ -273,11 +331,13 @@ void State::save(const std::filesystem::path& file) const {
         {"collapseMode", static_cast<int>(collapseMode)}, {"capsuleX", capsuleX}, {"capsuleY", capsuleY},
         {"window", {{"x", x}, {"y", y}, {"width", width}, {"height", height}}},
         {"tasks", json::array()}, {"rules", json::array()}, {"schedules", json::array()}};
-    for (const auto& task : tasks) root["tasks"].push_back({{"id", task.id}, {"text", utf8(task.text)}, {"done", task.done}});
+    for (const auto& task : tasks) root["tasks"].push_back({{"id", task.id}, {"text", utf8(task.text)}, {"done", task.done},
+        {"priority", static_cast<int>(task.details.priority)}, {"dueDate", task.details.dueDate}});
     for (const auto& rule : rules) root["rules"].push_back({{"label", utf8(rule.label)}, {"exe", utf8(rule.exe)}, {"enabled", rule.enabled}});
     for (const auto& event : schedules) root["schedules"].push_back({{"id", event.id}, {"text", utf8(event.text)}, {"due", event.due}, {"repeat", event.repeat}, {"done", event.done}, {"notified", event.notified}});
     const auto& p = pomodoro;
     root["pomodoro"]={{"focusMinutes",p.focusMinutes},{"shortMinutes",p.shortMinutes},{"longMinutes",p.longMinutes},{"phase",p.phase},{"cycle",p.cycle},{"todayCount",p.todayCount},{"date",p.date},{"remaining",p.remaining},{"deadline",p.deadline},{"running",p.running},{"noticePending",p.noticePending}};
+    root["pomodoro"]["taskId"] = p.taskId;
     std::filesystem::create_directories(file.parent_path());
     auto pending = file;
     pending += L".pending";

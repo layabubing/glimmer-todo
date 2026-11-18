@@ -2,14 +2,23 @@
 #include <windows.h>
 #include <algorithm>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <vector>
 #include <cstdint>
+
+enum class TaskPriority { Low, Normal, High };
+
+struct TaskDetails {
+    TaskPriority priority = TaskPriority::Normal;
+    int dueDate = 0;
+};
 
 struct Task {
     uint64_t id;
     std::wstring text;
     bool done;
+    TaskDetails details{};
 };
 
 struct TaskImportResult {
@@ -36,12 +45,15 @@ int64_t nowSeconds();
 SYSTEMTIME localTime(int64_t timestamp);
 int64_t timestampFromLocal(const SYSTEMTIME& local);
 std::wstring formatDate(int64_t timestamp);
+int localDate(int64_t timestamp);
+int taskDueDate(int year, int month, int day);
 
 struct Pomodoro {
     int focusMinutes = 25, shortMinutes = 5, longMinutes = 15;
     int phase = 0, cycle = 0, todayCount = 0, date = 0;
     int remaining = 25 * 60;
     int64_t deadline = 0;
+    uint64_t taskId = 0;
     bool running = false, noticePending = false;
 
     int duration() const;
@@ -75,11 +87,13 @@ struct State {
     uint64_t nextId = 1;
 
     State();
-    bool addTask(const std::wstring& text);
+    bool addTask(const std::wstring& text, TaskDetails details = {});
     TaskImportResult importTasks(const std::wstring& text);
-    bool editTask(uint64_t id, const std::wstring& text);
+    const Task* findTask(uint64_t id) const;
+    bool editTask(uint64_t id, const std::wstring& text, std::optional<TaskDetails> details = std::nullopt);
     void toggleTask(uint64_t id);
     void removeTask(uint64_t id);
+    bool bindPomodoroTask(uint64_t id);
     bool addRule(const std::wstring& executable);
     bool matches(const std::wstring& executable) const;
     bool putSchedule(uint64_t id, const std::wstring& text, int64_t due, int repeat);
