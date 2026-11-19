@@ -7,10 +7,10 @@
 #include <vector>
 #include <cstdint>
 
-enum class TaskPriority { Low, Normal, High };
+constexpr int MinTaskPriority = 0, DefaultTaskPriority = 50, MaxTaskPriority = 100;
 
 struct TaskDetails {
-    TaskPriority priority = TaskPriority::Normal;
+    int priority = DefaultTaskPriority;
     int dueDate = 0;
 };
 
@@ -91,6 +91,7 @@ struct State {
     TaskImportResult importTasks(const std::wstring& text);
     const Task* findTask(uint64_t id) const;
     bool editTask(uint64_t id, const std::wstring& text, std::optional<TaskDetails> details = std::nullopt);
+    bool editTaskDetails(uint64_t id, TaskDetails details);
     void toggleTask(uint64_t id);
     void removeTask(uint64_t id);
     bool bindPomodoroTask(uint64_t id);
@@ -101,6 +102,8 @@ struct State {
     void load(const std::filesystem::path& file);
     void save(const std::filesystem::path& file) const;
     CompactInfo compactInfo(int64_t now) const;
+private:
+    void sortTasks();
 };
 
 std::wstring trim(const std::wstring& value);

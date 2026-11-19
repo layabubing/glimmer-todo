@@ -50,7 +50,7 @@ int main() {
     auto first = state.tasks[0].id;
     auto second = state.tasks[1].id;
     state.toggleTask(first);
-    check(state.tasks[0].done, "complete task");
+    check(state.tasks.back().id==first && state.tasks.back().done, "send completed task to the bottom");
     state.toggleTask(first);
     check(!state.tasks[0].done, "reopen task");
     check(state.editTask(first,L"修改后的待办"), "edit task");
@@ -75,7 +75,7 @@ int main() {
         std::ifstream input(file);
         auto data=nlohmann::json::parse(input);
         data.erase("fontPercent");
-        for (auto& task : data["tasks"]) { task.erase("priority"); task.erase("dueDate"); }
+        for (auto& task : data["tasks"]) { task.erase("priorityScore"); task.erase("dueDate"); }
         data["pomodoro"].erase("taskId");
         data["layoutVersion"]=3;data["window"]["width"]=300;data["window"]["height"]=380;
         std::ofstream output(previousLayout);output<<data;
@@ -83,18 +83,19 @@ int main() {
     State migrated;migrated.load(previousLayout);
     check(migrated.width==260 && migrated.height==300,"apply compact dimensions when upgrading layout");
     check(migrated.fontPercent==100,"existing data uses default font proportion");
-    check(migrated.tasks.front().details.priority==TaskPriority::Normal && migrated.tasks.front().details.dueDate==0
+    check(migrated.tasks.front().details.priority==DefaultTaskPriority && migrated.tasks.front().details.dueDate==0
         && migrated.pomodoro.taskId==0,"existing data has normal priority, no due date and no timer binding");
     check(migrated.x==100 && migrated.y==200 && migrated.tasks[0].text==loaded.tasks[0].text && migrated.rules.size()==loaded.rules.size(),"preserve position and data when upgrading layout");
     migrated.width=320;migrated.height=360;migrated.save(previousLayout);State resized;resized.load(previousLayout);
     check(resized.width==320 && resized.height==360,"preserve user dimensions after layout upgrade");
     check(loaded.addTask(L"重启后新增"), "add after reload");
-    check(loaded.tasks.back().id > second, "unique ids after reload");
+    auto addedId=loaded.tasks[1].id;
+    check(addedId > second, "unique ids after reload");
     loaded.removeTask(first);
-    check(loaded.tasks.size()==2 && loaded.tasks[0].id==second, "delete task");
+    check(loaded.tasks.size()==2 && loaded.tasks.front().id==addedId && loaded.tasks.back().id==second, "delete task");
     loaded.save(file);
     State replaced;replaced.load(file);
-    check(replaced.tasks.size()==2 && replaced.tasks[0].id==second, "atomic replacement");
+    check(replaced.tasks.size()==2 && replaced.tasks.front().id==addedId && replaced.tasks.back().id==second, "atomic replacement");
     check(!std::filesystem::exists(file.wstring()+L".pending"), "no partial file after save");
     check(wide(utf8(L"中文与 emoji 📝"))==L"中文与 emoji 📝", "UTF8 round trip");
     for(int theme=0;theme<3;++theme) {
@@ -113,30 +114,55 @@ int main() {
     State prioritized;
     int leapDay=taskDueDate(2028,2,29);
     check(leapDay==20280229 && taskDueDate(2027,2,29)==0 && taskDueDate(2028,1,257)==0,"validate civil due dates");
-    check(prioritized.addTask(L"普通任务") && prioritized.addTask(L"低优先级",{TaskPriority::Low,leapDay})
-        && prioritized.addTask(L"高优先级",{TaskPriority::High,leapDay}),"create tasks with priority and due date");
+    check(prioritized.addTask(L"普通任务") && prioritized.addTask(L"低优先级",{MinTaskPriority,leapDay})
+        && prioritized.addTask(L"高优先级",{MaxTaskPriority,leapDay}),"create tasks with priority and due date");
     auto highId=prioritized.tasks.front().id;
     auto normalId=prioritized.tasks[1].id;
     auto lowId=prioritized.tasks.back().id;
-    check(prioritized.tasks.front().details.priority==TaskPriority::High && prioritized.tasks.back().details.priority==TaskPriority::Low,"sort by descending priority");
-    check(prioritized.editTask(normalId,L"提高优先级",TaskDetails{TaskPriority::High,leapDay})
+    check(prioritized.tasks.front().details.priority==MaxTaskPriority && prioritized.tasks.back().details.priority==MinTaskPriority,"sort by descending priority");
+    check(prioritized.editTask(normalId,L"提高优先级",TaskDetails{MaxTaskPriority,leapDay})
         && prioritized.tasks.front().id==normalId && prioritized.tasks[1].id==highId,"sort edited tasks by priority then creation order");
     check(prioritized.importTasks(L"导入普通任务").added==1 && prioritized.tasks.back().id==lowId,"sort batch imports at normal priority");
-    check(!prioritized.editTask(normalId,L"无效日期",TaskDetails{TaskPriority::High,20280230})
+    check(!prioritized.editTask(normalId,L"无效日期",TaskDetails{MaxTaskPriority,20280230})
         && prioritized.tasks.front().text==L"提高优先级","reject invalid due date without changing task");
-    check(prioritized.bindPomodoroTask(normalId) && !prioritized.bindPomodoroTask(0xFFFF),"bind existing pending task and reject unknown tasks");
+    check(!prioritized.editTaskDetails(lowId,{MaxTaskPriority+1,leapDay}) && prioritized.tasks.back().details.priority==MinTaskPriority,"reject out-of-range priority");
+    check(prioritized.editTaskDetails(highId,{84,leapDay}) && prioritized.tasks[1].details.priority==84
+        && prioritized.tasks[1].text==L"高优先级","edit numeric priority without changing task text");
+    check(prioritized.bindPomodoroTask(lowId) && prioritized.tasks.front().id==lowId
+        && !prioritized.bindPomodoroTask(0xFFFF),"move even the lowest priority task to the top when bound");
+    check(prioritized.bindPomodoroTask(0) && prioritized.tasks.front().id==normalId
+        && prioritized.bindPomodoroTask(lowId),"restore numeric order on unbind");
     prioritized.pomodoro.toggle(now);
     prioritized.save(directory/L"prioritized.json");
     State restoredTasks;restoredTasks.load(directory/L"prioritized.json");
-    check(restoredTasks.tasks.front().details.dueDate==leapDay && restoredTasks.tasks.front().details.priority==TaskPriority::High
-        && restoredTasks.pomodoro.taskId==normalId && restoredTasks.pomodoro.running,"restore priority, due date and running bound timer");
-    check(restoredTasks.editTask(normalId,L"更新专注任务") && restoredTasks.tasks.front().details.dueDate==leapDay
+    check(restoredTasks.tasks.front().details.dueDate==leapDay && restoredTasks.tasks.front().details.priority==MinTaskPriority
+        && restoredTasks.pomodoro.taskId==lowId && restoredTasks.pomodoro.running,"restore numeric priority, due date and running bound timer");
+    check(restoredTasks.editTask(lowId,L"更新专注任务") && restoredTasks.tasks.front().details.dueDate==leapDay
         && restoredTasks.compactInfo(now).details.find(L"更新专注任务")!=std::wstring::npos,"rename bound task while keeping its metadata");
+    restoredTasks.toggleTask(lowId);
+    check(restoredTasks.tasks.back().id==lowId && restoredTasks.pomodoro.taskId==0
+        && restoredTasks.pomodoro.running && !restoredTasks.bindPomodoroTask(lowId),"completing a bound task moves it to the bottom and keeps the timer running");
     restoredTasks.toggleTask(normalId);
-    check(restoredTasks.pomodoro.taskId==0 && restoredTasks.pomodoro.running && !restoredTasks.bindPomodoroTask(normalId),"completing a task unbinds it while the timer continues");
-    check(restoredTasks.bindPomodoroTask(highId),"switch the running timer to another pending task");
+    check(restoredTasks.tasks[2].id==normalId && restoredTasks.tasks[2].done,"completed high priority follows pending lower priorities");
+    restoredTasks.toggleTask(normalId);
+    check(restoredTasks.tasks.front().id==normalId && !restoredTasks.tasks.front().done,"restoring a task returns it to the correct priority position");
+    check(restoredTasks.bindPomodoroTask(highId) && restoredTasks.tasks.front().id==highId,"switch the running timer to another pending task");
     restoredTasks.removeTask(highId);
     check(restoredTasks.pomodoro.taskId==0 && restoredTasks.pomodoro.running,"deleting the bound task preserves the countdown");
+    auto legacyPriorityFile=directory/L"legacy-priority.json";
+    {
+        std::ifstream input(directory/L"prioritized.json");
+        auto data=nlohmann::json::parse(input);
+        for(auto& task:data["tasks"]) {
+            auto id=task.at("id").get<uint64_t>();
+            task.erase("priorityScore");
+            task["priority"]=id==lowId?0:id==highId?2:1;
+        }
+        std::ofstream output(legacyPriorityFile);output<<data;
+    }
+    State legacyPriorities;legacyPriorities.load(legacyPriorityFile);
+    check(legacyPriorities.findTask(lowId)->details.priority==25 && legacyPriorities.findTask(normalId)->details.priority==50
+        && legacyPriorities.findTask(highId)->details.priority==75 && legacyPriorities.tasks.front().id==lowId,"migrate all legacy priorities and retain the bound task order");
     State compact;
     check(compact.collapseMode==CollapseMode::Capsule && compact.compactInfo(now).tasks==L"待办 0/0" && compact.compactInfo(now).schedule==L"暂无日程","compact defaults");
     compact.addTask(L"准备资料");compact.addTask(L"完成记录");compact.toggleTask(compact.tasks.back().id);
