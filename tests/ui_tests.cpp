@@ -38,6 +38,10 @@ void activateMainItem(ImGuiID id) {
     ImGui::ActivateItemByID(id);
     frames(3);
 }
+void pressMainKey(ImGuiKey key) {
+    surface(mainWindow)->select();ImGui::GetIO().AddKeyEvent(key,true);frames();
+    surface(mainWindow)->select();ImGui::GetIO().AddKeyEvent(key,false);frames();
+}
 ImGuiWindow* mainPopup() {
     surface(mainWindow)->select();
     auto& popups=ImGui::GetCurrentContext()->OpenPopupStack;
@@ -104,20 +108,18 @@ int main() {
     check(disabledFromCommand,"shared settings action removes Windows startup registration");
     check(startupEntry()==originalStartup,"restore original startup preference after checks");
     taskInput="整理今天的想法 📝";check(submitTask(),"create task through UI action");auto first=state.tasks.front().id;
-    taskInput="为专注留出半个小时";check(submitTask(),"create second task");state.toggleTask(first);save();
+    taskInput="为专注留出半个小时";check(submitTask(),"create second task");auto second=state.tasks.back().id;state.toggleTask(first);save();
     taskInput="确认下一个日程";check(submitTask(),"create third task for compact list");
-    taskInput="完成今天的阅读";check(submitTask(),"create fourth task for compact list");
-    editTask(first);taskInput="整理今天的想法与笔记 📝";check(submitTask() && state.tasks.front().text==L"整理今天的想法与笔记 📝","edit Unicode task through UI action");
+    auto fourth=state.nextId;taskInput="完成今天的阅读";check(submitTask(),"create fourth task for compact list");
+    editTask(first);taskInput="整理今天的想法与笔记 📝";check(submitTask() && state.findTask(first)->text==L"整理今天的想法与笔记 📝","edit Unicode task through UI action");
     editTask(first);cancelEdit();check(!editingId && taskInput.empty(),"cancel task editing");
-    auto second=state.tasks[1].id;
     frames();rightClickTask(second);
     check(selectedTaskId==second,"right-click selects the clicked task instead of the previous selection");
     snapshot(chrome::menuWindow(),L"task-context-menu");
     chooseMenuRow(0);check(editingId==second,"task context menu edits the clicked row");cancelEdit();
-    rightClickTask(second);chooseMenuRow(1);check(state.findTask(second)->done,"task context menu completes the clicked row");
-    rightClickTask(second);chooseMenuRow(1);check(!state.findTask(second)->done,"task context menu restores the clicked row");
-    auto fourth=state.tasks.back().id;
-    rightClickTask(fourth);chooseMenuRow(2);check(!state.findTask(fourth) && state.tasks.size()==3,"task context menu deletes only the clicked row");
+    rightClickTask(second);chooseMenuRow(2);check(state.findTask(second)->done,"task context menu completes the clicked row");
+    rightClickTask(second);chooseMenuRow(2);check(!state.findTask(second)->done,"task context menu restores the clicked row");
+    rightClickTask(fourth);chooseMenuRow(3);check(!state.findTask(fourth) && state.tasks.size()==3,"task context menu deletes only the clicked row");
     rightClickMain(ui::size(8,80));chooseMenuRow(0);check(manuallyHidden,"right-click on the main window background opens the application menu");
     SendMessageW(mainWindow,ShowRequest,0,0);frames();
     SendMessageW(mainWindow,TrayMessage,0,WM_RBUTTONUP);
@@ -165,17 +167,26 @@ int main() {
     activateMainItem(root->GetID("##taskDetails"));
     auto* options=mainPopup();
     activateMainItem(options->GetID("##priority"));
-    auto highPriorityScope=mainPopup()->GetID(static_cast<int>(TaskPriority::High));
-    activateMainItem(ImHashStr("高",0,highPriorityScope));
+    pressMainKey(ImGuiKey_RightArrow);
+    int higherPriority=taskPriority;
     activateMainItem(options->GetID("设置截止日期"));
-    check(taskHasDueDate && taskPriority==static_cast<int>(TaskPriority::High),"select priority and enable the date from task options");
+    check(taskHasDueDate && higherPriority>DefaultTaskPriority,"move the priority slider and enable the date from task options");
     taskYear=2028;taskMonth=2;taskDay=30;
     activateMainItem(options->GetID("确定"));
     check(!taskOptionsError.empty() && taskDetails.dueDate==0,"invalid deadline remains in the options popup");
     snapshot(mainWindow,L"task-options");
     taskDay=29;activateMainItem(options->GetID("确定"));
     activateMainItem(root->GetID("保存"));
-    check(state.tasks.front().id==priorityTaskId && state.tasks.front().details.dueDate==20280229,"save task details and reorder the displayed list");
+    check(state.tasks.front().id==priorityTaskId && state.tasks.front().details.priority==higherPriority
+        && state.tasks.front().details.dueDate==20280229,"save task details and reorder the displayed list");
+    auto titleBefore=state.tasks.front().text;
+    rightClickTask(priorityTaskId);chooseMenuRow(1);
+    options=mainPopup();
+    check(taskOptionsId==priorityTaskId && taskPriority==higherPriority,"context action opens saved priority for an existing task");
+    activateMainItem(options->GetID("##priority"));pressMainKey(ImGuiKey_RightArrow);
+    activateMainItem(options->GetID("确定"));
+    check(!editingId && state.tasks.front().details.priority>higherPriority && state.tasks.front().details.dueDate==20280229
+        && state.tasks.front().text==titleBefore,"context action saves changed priority while preserving the task and deadline");
     selectView(2);frames(12);
     surface(mainWindow)->select();
     auto focusBodyId=root->GetID("##focusBody");
@@ -184,16 +195,22 @@ int main() {
     check(focusBody!=nullptr,"show focus page controls");
     auto comboId=focusBody->GetID("##pomodoroTask");
     activateMainItem(comboId);
-    auto taskId=std::to_string(priorityTaskId);
+    auto taskId=std::to_string(second);
     auto taskScope=mainPopup()->GetID(taskId.c_str());
     activateMainItem(ImHashStr("##task",0,taskScope));
-    check(state.pomodoro.taskId==priorityTaskId,"bind task from the focus page dropdown");
+    check(state.pomodoro.taskId==second,"bind task from the focus page dropdown");
     snapshot(mainWindow,L"focus-bound-task");
     focusMinutes=30;shortMinutes=6;longMinutes=20;command(PomoConfigId);check(state.pomodoro.focusMinutes==30,"configure focus through UI action");command(PomoStartId);check(state.pomodoro.running,"start focus");command(PomoStartId);check(!state.pomodoro.running,"pause focus");command(PomoResetId);
-    check(state.pomodoro.taskId==priorityTaskId,"keep task binding through start, pause and reset");
+    check(state.pomodoro.taskId==second,"keep task binding through start, pause and reset");
+    selectView(0);frames(12);
+    check(taskRowBounds.front().id==second && taskRowBounds[1].id==priorityTaskId && taskRowBounds.back().id==first,
+        "show bound task, highest priority pending task, then completed task");
+    snapshot(mainWindow,L"task-priority-order");
+    selectView(2);frames(12);
     activateMainItem(comboId);
     activateMainItem(mainPopup()->GetID("不绑定任务"));
     check(state.pomodoro.taskId==0,"unbind from the focus page dropdown");
+    check(state.tasks.front().id==priorityTaskId,"unbinding restores priority order");
     check(addRule(L"C:\\Windows\\System32\\notepad.exe"),"custom executable rule");check(!addRule(L"notepad.exe"),"duplicate rule displays inline validation");settingsError.clear();
     RECT normal{};GetWindowRect(mainWindow,&normal);
     for(int mode=0;mode<4;++mode) {
@@ -209,7 +226,7 @@ int main() {
     surface(mainWindow)->select();focusTaskInput=true;frames(2);surface(mainWindow)->select();ImGui::GetIO().AddInputCharactersUTF8("中文输入检查");frames(2);
     check(taskInput=="中文输入检查","custom text field accepts Chinese input events");
     auto previousCount=state.tasks.size();surface(mainWindow)->select();ImGui::GetIO().AddKeyEvent(ImGuiKey_Enter,true);frames(2);surface(mainWindow)->select();ImGui::GetIO().AddKeyEvent(ImGuiKey_Enter,false);frames(2);
-    check(state.tasks.size()==previousCount+1 && state.tasks.back().text==L"中文输入检查","Enter saves text through custom input");
+    check(state.tasks.size()==previousCount+1 && state.tasks[state.tasks.size()-2].text==L"中文输入检查","Enter saves text through custom input");
     editTask(first);frames(2);surface(mainWindow)->select();ImGui::GetIO().AddKeyEvent(ImGuiKey_Escape,true);frames(2);surface(mainWindow)->select();ImGui::GetIO().AddKeyEvent(ImGuiKey_Escape,false);frames(2);
     check(!editingId && taskInput.empty(),"Escape cancels editing through custom input");
     command(CollapseFirstId+2);command(ImportId);frames(2);check(!manuallyHidden && IsWindowVisible(importWindow),"import command expands collapsed application");DestroyWindow(importWindow);
@@ -220,7 +237,7 @@ int main() {
     importText.clear();importError.clear();focusImportInput=true;frames(2);surface(importWindow)->select();ImGui::GetIO().AddInputCharactersUTF8("批量任务甲\n\n批量任务乙 📝");frames(2);
     check(importText=="批量任务甲\n\n批量任务乙 📝","multiline import field accepts Unicode input");snapshot(importWindow,L"batch-import");
     surface(importWindow)->select();ImGui::GetIO().AddKeyEvent(ImGuiMod_Ctrl,true);ImGui::GetIO().AddKeyEvent(ImGuiKey_Enter,true);frames(2);
-    check(!importWindow && state.tasks.size()==beforeImport+2 && state.tasks.back().text==L"批量任务乙 📝","Ctrl+Enter imports and closes the custom editor");
+    check(!importWindow && state.tasks.size()==beforeImport+2 && state.tasks[state.tasks.size()-2].text==L"批量任务乙 📝","Ctrl+Enter imports and closes the custom editor");
     surface(mainWindow)->select();ImGui::GetIO().AddKeyEvent(ImGuiMod_Ctrl,false);ImGui::GetIO().AddKeyEvent(ImGuiKey_Enter,false);frames(2);
     State persisted;persisted.load(dataFile);check(persisted.tasks.size()==state.tasks.size() && persisted.schedules.size()==state.schedules.size(),"persist UI changes to real data file");
     check(followCurrentDesktop({mainWindow,compactWindow}),"custom UI supports virtual desktop service");
