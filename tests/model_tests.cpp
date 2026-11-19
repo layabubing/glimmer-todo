@@ -75,7 +75,7 @@ int main() {
         std::ifstream input(file);
         auto data=nlohmann::json::parse(input);
         data.erase("fontPercent");
-        for (auto& task : data["tasks"]) { task.erase("priorityScore"); task.erase("dueDate"); }
+        for (auto& task : data["tasks"]) { task.erase("priorityScore"); task.erase("dueDate"); task.erase("note"); }
         data["pomodoro"].erase("taskId");
         data["layoutVersion"]=3;data["window"]["width"]=300;data["window"]["height"]=380;
         std::ofstream output(previousLayout);output<<data;
@@ -85,6 +85,7 @@ int main() {
     check(migrated.fontPercent==100,"existing data uses default font proportion");
     check(migrated.tasks.front().details.priority==DefaultTaskPriority && migrated.tasks.front().details.dueDate==0
         && migrated.pomodoro.taskId==0,"existing data has normal priority, no due date and no timer binding");
+    check(migrated.findTask(first)->note.empty() && migrated.findTask(second)->note.empty(),"existing tasks start with empty notes");
     check(migrated.x==100 && migrated.y==200 && migrated.tasks[0].text==loaded.tasks[0].text && migrated.rules.size()==loaded.rules.size(),"preserve position and data when upgrading layout");
     migrated.width=320;migrated.height=360;migrated.save(previousLayout);State resized;resized.load(previousLayout);
     check(resized.width==320 && resized.height==360,"preserve user dimensions after layout upgrade");
@@ -111,6 +112,21 @@ int main() {
         check(compact.collapseMode==state.collapseMode && compact.capsuleX==-320 && compact.capsuleY==64,"persist collapse mode and position");
     }
     auto now=nowSeconds();
+    State noted;
+    auto noteId=noted.nextId;
+    check(noted.addTask(L"整理资料",{82,20280229}) && noted.addTask(L"另一项任务"),"set up independent task notes");
+    auto note=L"第一行 📝\n\n  第二行记录细节";
+    check(noted.setTaskNote(noteId,note) && !noted.setTaskNote(noteId,std::wstring(MaxTaskNoteLength+1,L'字'))
+        && !noted.setTaskNote(noted.nextId,note),"save multiline notes and reject invalid changes");
+    check(noted.editTask(noteId,L"整理项目资料") && noted.editTaskDetails(noteId,{60,20280229}),"edit task title and priority independently of its note");
+    noted.toggleTask(noteId);
+    auto noteFile=directory/L"task-notes.json";
+    noted.save(noteFile);
+    State restoredNotes;restoredNotes.load(noteFile);
+    const auto* restoredNote=restoredNotes.findTask(noteId);
+    check(restoredNote && restoredNote->note==note && restoredNote->done && restoredNote->details.dueDate==20280229
+        && restoredNotes.tasks.front().note.empty(),"restore exact multiline note for the correct task after reordering and restart");
+    check(restoredNotes.setTaskNote(noteId,L"") && restoredNotes.findTask(noteId)->note.empty(),"clear an existing note");
     State prioritized;
     int leapDay=taskDueDate(2028,2,29);
     check(leapDay==20280229 && taskDueDate(2027,2,29)==0 && taskDueDate(2028,1,257)==0,"validate civil due dates");

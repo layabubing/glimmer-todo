@@ -8,6 +8,7 @@
 #include <cstdint>
 
 constexpr int MinTaskPriority = 0, DefaultTaskPriority = 50, MaxTaskPriority = 100;
+constexpr size_t MaxTaskNoteLength = 8192;
 
 struct TaskDetails {
     int priority = DefaultTaskPriority;
@@ -19,6 +20,7 @@ struct Task {
     std::wstring text;
     bool done;
     TaskDetails details{};
+    std::wstring note;
 };
 
 struct TaskImportResult {
@@ -92,6 +94,7 @@ struct State {
     const Task* findTask(uint64_t id) const;
     bool editTask(uint64_t id, const std::wstring& text, std::optional<TaskDetails> details = std::nullopt);
     bool editTaskDetails(uint64_t id, TaskDetails details);
+    bool setTaskNote(uint64_t id, std::wstring note);
     void toggleTask(uint64_t id);
     void removeTask(uint64_t id);
     bool bindPomodoroTask(uint64_t id);

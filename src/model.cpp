@@ -224,6 +224,14 @@ bool State::editTaskDetails(uint64_t id, TaskDetails details) {
     return true;
 }
 
+bool State::setTaskNote(uint64_t id, std::wstring note) {
+    if (note.size() > MaxTaskNoteLength) return false;
+    auto task = std::ranges::find(tasks, id, &Task::id);
+    if (task == tasks.end()) return false;
+    task->note = std::move(note);
+    return true;
+}
+
 void State::toggleTask(uint64_t id) {
     for (auto& task : tasks) if (task.id == id) {
         task.done = !task.done;
@@ -299,8 +307,9 @@ void State::load(const std::filesystem::path& file) {
     nextId = 1;
     for (const auto& entry : root.at("tasks")) {
         Task task{entry.at("id").get<uint64_t>(), wide(entry.at("text").get<std::string>()), entry.at("done").get<bool>(),
-            {readTaskPriority(entry), entry.value("dueDate", 0)}};
-        require(task.id > 0 && task.id < UINT64_MAX && !trim(task.text).empty() && task.text.size() <= 500 && validTaskDetails(task.details), L"待办数据无效。");
+            {readTaskPriority(entry), entry.value("dueDate", 0)}, wide(entry.value("note", std::string{}))};
+        require(task.id > 0 && task.id < UINT64_MAX && !trim(task.text).empty() && task.text.size() <= 500
+            && validTaskDetails(task.details) && task.note.size() <= MaxTaskNoteLength, L"待办数据无效。");
         require(std::none_of(tasks.begin(), tasks.end(), [&](const Task& existing) { return existing.id == task.id; }), L"待办编号重复。");
         nextId = (std::max)(nextId, task.id + 1);
         tasks.push_back(std::move(task));
@@ -355,7 +364,7 @@ void State::save(const std::filesystem::path& file) const {
         {"window", {{"x", x}, {"y", y}, {"width", width}, {"height", height}}},
         {"tasks", json::array()}, {"rules", json::array()}, {"schedules", json::array()}};
     for (const auto& task : tasks) root["tasks"].push_back({{"id", task.id}, {"text", utf8(task.text)}, {"done", task.done},
-        {"priorityScore", task.details.priority}, {"dueDate", task.details.dueDate}});
+        {"priorityScore", task.details.priority}, {"dueDate", task.details.dueDate}, {"note", utf8(task.note)}});
     for (const auto& rule : rules) root["rules"].push_back({{"label", utf8(rule.label)}, {"exe", utf8(rule.exe)}, {"enabled", rule.enabled}});
     for (const auto& event : schedules) root["schedules"].push_back({{"id", event.id}, {"text", utf8(event.text)}, {"due", event.due}, {"repeat", event.repeat}, {"done", event.done}, {"notified", event.notified}});
     const auto& p = pomodoro;
