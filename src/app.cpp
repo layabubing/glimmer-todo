@@ -26,8 +26,9 @@ constexpr int AddId=101,SettingsId=104,HideId=105,ScheduleAddId=112,ScheduleSave
 constexpr int PomoStartId=120,PomoResetId=121,PomoSkipId=122,PomoConfigId=123;
 constexpr int ThemeFirstId=500,MenuShow=301,MenuAuto=302,MenuTop=303,MenuSettings=304,MenuExit=305,MenuClear=306;
 constexpr int CollapseFirstId=320,BrowseId=206,ImportId=307,ImportSaveId=308,MenuStartup=309,FontFirstId=520;
-constexpr int TaskRemoveId=600,TaskEditId=603,TaskToggleId=604,TaskOptionsId=605;
+constexpr int TaskRemoveId=600,TaskEditId=603,TaskToggleId=604,TaskOptionsId=605,TaskNoteId=606;
 constexpr int FontPercentages[]={80,90,100,110,120,130,140,150};
+constexpr auto TaskNotePopup="任务笔记";
 enum class WindowKind { Main,Settings,Schedule,Files,Import };
 
 HINSTANCE instance;
@@ -51,10 +52,13 @@ bool focusTaskInput=false,installConfirmation=false;
 std::string taskInput,ruleInput,editorText,taskError,taskOptionsError,timerError,settingsError,scheduleError;
 TaskDetails taskDetails;
 uint64_t pendingTaskOptionsId=0,taskOptionsId=0;
+uint64_t pendingTaskNoteId=0,taskNoteId=0;
+std::string taskNoteText,taskNoteError;
 int taskPriority=DefaultTaskPriority,taskYear=0,taskMonth=0,taskDay=0;
 bool taskHasDueDate=false;
 std::string importText,importError;
 bool focusImportInput=false;
+bool startupUpdatePending=false;
 int editorYear=2026,editorMonth=1,editorDay=1,editorHour=9,editorMinute=0,editorRepeat=0;
 int focusMinutes=25,shortMinutes=5,longMinutes=15;
 std::unique_ptr<IGFD::FileDialog> filePicker;
@@ -150,6 +154,20 @@ void pomodoroTick() {
     if(state.pomodoro.tick(nowSeconds()))save();
     if(state.pomodoro.noticePending && !automaticallyHidden && GetTickCount64()>=nextNotice){notify(L"番茄钟",state.pomodoro.phase==0?L"休息结束，可以开始下一轮专注。":L"专注结束，请休息。点击专注页面的开始按钮计时。");state.pomodoro.noticePending=false;save();}
 }
+void checkUpdateOnStartup() {
+    startupUpdatePending=true;
+    checkUpdate();
+}
+void startupUpdateNotice() {
+    if(!startupUpdatePending)return;
+    auto update=updateStatus();
+    if(update.phase==UpdatePhase::Checking)return;
+    if(update.phase==UpdatePhase::Available) {
+        if(automaticallyHidden || GetTickCount64()<nextNotice)return;
+        notify(L"浮光待办更新",update.message+L"。打开设置中的「应用更新」即可下载。");
+    }
+    startupUpdatePending=false;
+}
 void errorText(const std::string& value) {
     if(value.empty())return;
     ImGui::PushStyleColor(ImGuiCol_Text,ui::color(state.theme==1?RGB(255,173,163):RGB(183,73,66)));ImGui::TextWrapped("%s",value.c_str());ImGui::PopStyleColor();
@@ -216,10 +234,12 @@ bool drawTaskRow(const Task& task,int today) {
     if(due)snprintf(dueLabel,sizeof(dueLabel),"%s %04d-%02d-%02d",overdue?"逾期":"截止",due/10000,due/100%100,due%100);
     float titleHeight=ImGui::GetFontSize();
     float textWidth=width-ui::p(59);
+    bool hasNote=!task.note.empty();
+    float noteWidth=hasNote?ui::p(24):0;
     ImGui::PushFont(nullptr,10);
     float metaHeight=ImGui::GetFontSize();
     float dueOffset=ImGui::CalcTextSize(priority.c_str()).x+ui::p(8);
-    bool wrapDate=due && dueOffset+ImGui::CalcTextSize(dueLabel).x>textWidth;
+    bool wrapDate=due && dueOffset+ImGui::CalcTextSize(dueLabel).x>textWidth-noteWidth;
     ImGui::PopFont();
     float rowHeight=ui::p(14)+titleHeight+metaHeight*(wrapDate?2:1);
     auto background=selectedTaskId==task.id?c.selected:c.surface;
@@ -234,7 +254,7 @@ bool drawTaskRow(const Task& task,int today) {
     auto box=ImGui::GetItemRectMin();draw->AddCircle({box.x+ui::p(10),box.y+ui::p(10)},ui::p(8),ui::ink(checked?c.accent:c.border),20,ui::p(1.4f));
     if(checked){draw->AddCircleFilled({box.x+ui::p(10),box.y+ui::p(10)},ui::p(8),ui::ink(c.accent));ui::icon(draw,ui::Icon::Check,{box.x+ui::p(10),box.y+ui::p(10)},5,ui::ink(c.onAccent));}
     ImGui::SetCursorScreenPos({origin.x+ui::p(31),origin.y+ui::p(3)});ImGui::PushStyleColor(ImGuiCol_Header,ui::color(background));
-    bool selected=ImGui::Selectable("##task",false,ImGuiSelectableFlags_AllowDoubleClick,{textWidth,rowHeight-ui::p(6)});ImGui::PopStyleColor();
+    bool selected=ImGui::Selectable("##task",false,ImGuiSelectableFlags_AllowDoubleClick,{textWidth-noteWidth,rowHeight-ui::p(6)});ImGui::PopStyleColor();
     if(selected)selectedTaskId=task.id;
     if((ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0)) || (ImGui::IsItemFocused() && (ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_F2))))editTask(task.id);
     toggle=toggle || (ImGui::IsItemFocused() && ImGui::IsKeyPressed(ImGuiKey_Space));
@@ -242,6 +262,7 @@ bool drawTaskRow(const Task& task,int today) {
     bool bound=state.pomodoro.taskId==task.id;
     if(ImGui::IsItemHovered())ImGui::SetTooltip("%s\n%s%s%s%s",value.c_str(),priority.c_str(),due?" · ":"",dueLabel,bound?"\n番茄钟已绑定":"");
     ImVec2 min{origin.x+ui::p(31),origin.y+ui::p(5)},max{origin.x+width-ui::p(28),rowEnd.y-ui::p(3)};
+    if(hasNote)max.x-=noteWidth;
     float titleEnd=bound?max.x-ui::p(18):max.x;
     draw->PushClipRect(min,{titleEnd,max.y},true);draw->AddText(min,ui::ink(task.done?c.muted:c.text),value.c_str());
     if(task.done){draw->AddLine({min.x,min.y+ImGui::GetFontSize()/2},{(std::min)(titleEnd,min.x+ImGui::CalcTextSize(value.c_str()).x),min.y+ImGui::GetFontSize()/2},ui::ink(c.muted));}
@@ -255,6 +276,10 @@ bool drawTaskRow(const Task& task,int today) {
     draw->PopClipRect();
     ImGui::SetCursorScreenPos({origin.x+width-ui::p(25),origin.y+ui::p(5)});if(ui::iconButton("##remove",ui::Icon::Close,"删除待办",false,22)){selectedTaskId=task.id;post(TaskRemoveId);}
     if(bound)ui::icon(draw,ui::Icon::Timer,{max.x-ui::p(9),origin.y+ui::p(16)},6,ui::ink(c.accent));
+    if(hasNote) {
+        ImGui::SetCursorScreenPos({origin.x+width-ui::p(49),origin.y+ui::p(5)});
+        if(ui::iconButton("##note",ui::Icon::List,"查看任务笔记",false,22))pendingTaskNoteId=task.id;
+    }
     ImGui::SetCursorScreenPos({origin.x,rowEnd.y});ImGui::Dummy({width,0});ImGui::PopID();
     return toggle;
 }
@@ -298,6 +323,47 @@ void drawTaskOptions() {
     if(ui::button("确定",{ImGui::GetContentRegionAvail().x,0},true) && applyTaskOptions())ImGui::CloseCurrentPopup();
     ImGui::EndPopup();
 }
+
+void drawTaskNote() {
+    if(pendingTaskNoteId) {
+        if(const auto* task=state.findTask(pendingTaskNoteId)) {
+            taskNoteId=task->id;
+            taskNoteText=str(task->note);
+            taskNoteError.clear();
+            ImGui::OpenPopup(TaskNotePopup);
+        }
+        pendingTaskNoteId=0;
+    }
+    if(!ImGui::IsPopupOpen(TaskNotePopup))return;
+    const auto* task=state.findTask(taskNoteId);
+    auto viewport=ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(viewport->GetCenter(),ImGuiCond_Appearing,{0.5f,0.5f});
+    ImGui::SetNextWindowSize({(std::min)(ui::p(420),viewport->Size.x-ui::p(16)),0},ImGuiCond_Always);
+    if(!ImGui::BeginPopupModal(TaskNotePopup,nullptr,ImGuiWindowFlags_AlwaysAutoResize))return;
+    if(!task)ImGui::CloseCurrentPopup();
+    else {
+        auto title=str(task->text);
+        auto titlePos=ImGui::GetCursorScreenPos();
+        auto titleSize=ImVec2{ImGui::GetContentRegionAvail().x,ImGui::GetTextLineHeight()};
+        auto* draw=ImGui::GetWindowDrawList();
+        draw->PushClipRect(titlePos,{titlePos.x+titleSize.x,titlePos.y+titleSize.y},true);
+        draw->AddText(titlePos,ui::ink(ui::palette().muted),title.c_str());
+        draw->PopClipRect();
+        ImGui::Dummy(titleSize);
+        if(ImGui::IsWindowAppearing())ImGui::SetKeyboardFocusHere();
+        float height=std::clamp(viewport->Size.y-ui::p(116),ui::p(72),ui::p(220));
+        bool submitted=ImGui::InputTextMultiline("##taskNote",&taskNoteText,{-1,height},ImGuiInputTextFlags_EnterReturnsTrue|ImGuiInputTextFlags_WordWrap);
+        errorText(taskNoteError);
+        if(ui::button("保存笔记",{},true) || submitted) {
+            if(state.setTaskNote(taskNoteId,wide(taskNoteText))) {save();ImGui::CloseCurrentPopup();}
+            else taskNoteError="笔记最多 8192 个 UTF-16 字符。";
+        }
+        ImGui::SameLine();
+        if(ui::button("取消") || ImGui::IsKeyPressed(ImGuiKey_Escape))ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+}
+
 void drawTasks() {
     float rowHeight=(std::max)(ui::p(26),ImGui::GetFrameHeight());
     float errorHeight=taskError.empty()?0:ImGui::CalcTextSize(taskError.c_str(),nullptr,false,ImGui::GetContentRegionAvail().x).y+ImGui::GetStyle().ItemSpacing.y;
@@ -326,6 +392,7 @@ void drawTasks() {
         pendingTaskOptionsId=0;
     }
     drawTaskOptions();
+    drawTaskNote();
 }
 
 void drawScheduleRow(const Schedule& event) {
@@ -416,6 +483,7 @@ void drawMain() {
     if(activeView==0){drawTasks();}
     if(activeView==1){drawSchedules();}
     if(activeView==2){drawPomodoro();}
+    if(ImGui::IsPopupOpen(TaskNotePopup))return;
     auto& io=ImGui::GetIO();if(io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_N)){selectView(0);focusTaskInput=true;}
     if(io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_I))post(ImportId);
 }
@@ -563,6 +631,7 @@ void mainContextMenu(POINT point) {
     chrome::menu(mainWindow,point,{{TaskEditId,L"编辑待办"},
         {TaskOptionsId,L"设置优先级和截止日期"},
         {TaskToggleId,task->done?L"恢复待办":L"完成待办"},
+        {TaskNoteId,task->note.empty()?L"添加笔记":L"查看或编辑笔记"},
         {TaskRemoveId,L"删除待办"}},state.theme,state.fontPercent);
 }
 void compactFonts() {
@@ -670,6 +739,7 @@ void command(int id) {
     case MenuClear:std::erase_if(state.tasks,[](const Task& task){return task.done;});cancelEdit();save();break;
     case TaskEditId:editTask(selectedTaskId);break;
     case TaskOptionsId:pendingTaskOptionsId=selectedTaskId;break;
+    case TaskNoteId:pendingTaskNoteId=selectedTaskId;break;
     case TaskToggleId:if(selectedTaskId){state.toggleTask(selectedTaskId);save();}break;
     case TaskRemoveId:if(selectedTaskId)removeTask(selectedTaskId);break;
     case 601:std::erase_if(state.schedules,[](const Schedule& event){return event.id==selectedScheduleId;});selectedScheduleId=0;save();break;
@@ -712,7 +782,7 @@ LRESULT CALLBACK windowProc(HWND window,UINT message,WPARAM wParam,LPARAM lParam
         if(kind==WindowKind::Main && (wParam&0xFFF0)==SC_RESTORE){manuallyHidden=false;evaluateForeground();return 0;}break;
     case WM_COMMAND:command(LOWORD(wParam));return 0;
     case WM_CONTEXTMENU:if(kind==WindowKind::Main)mainContextMenu({GET_X_LPARAM(lParam),GET_Y_LPARAM(lParam)});else menu(mainWindow);return 0;
-    case WM_TIMER:if(wParam==2)renderWindows();else{evaluateForeground();pomodoroTick();scheduleNotices();}return 0;
+    case WM_TIMER:if(wParam==2)renderWindows();else{evaluateForeground();pomodoroTick();scheduleNotices();startupUpdateNotice();}return 0;
     case ForegroundMessage:evaluateForeground();return 0;
     case ShowRequest:manuallyHidden=false;evaluateForeground();return 0;
     case TaskbarMenuRequest:menu(mainWindow);return 0;
@@ -755,5 +825,6 @@ int WINAPI wWinMain(HINSTANCE app,HINSTANCE,LPWSTR,int) {
     initializeVirtualDesktops();PWSTR local=nullptr;require(SHGetKnownFolderPath(FOLDERID_LocalAppData,0,nullptr,&local)==S_OK,L"无法获取本地数据目录。");dataFile=std::filesystem::path(local)/L"DesktopList"/L"state.json";CoTaskMemFree(local);state.load(dataFile);
     initializeWindows();taskbarCreated=RegisterWindowMessageW(L"TaskbarCreated");addTray();foregroundHook=SetWinEventHook(EVENT_SYSTEM_FOREGROUND,EVENT_SYSTEM_FOREGROUND,nullptr,foregroundEvent,0,0,WINEVENT_OUTOFCONTEXT);require(foregroundHook!=nullptr,L"无法启用前台软件检测。");
     desktopHook=SetWinEventHook(EVENT_OBJECT_CLOAKED,EVENT_OBJECT_UNCLOAKED,nullptr,desktopEvent,GetCurrentProcessId(),0,WINEVENT_OUTOFCONTEXT);require(desktopHook!=nullptr,L"无法启用虚拟桌面检测。");require(SetTimer(mainWindow,1,250,nullptr),L"无法启动前台状态检查。");ready=true;evaluateForeground();
+    checkUpdateOnStartup();
     MSG message{};BOOL result;while((result=GetMessageW(&message,nullptr,0,0))>0){TranslateMessage(&message);DispatchMessageW(&message);}require(result!=-1,L"窗口消息处理失败。");stopUpdater();ui::shutdown();DestroyIcon(appIcon);shutdownVirtualDesktops();CloseHandle(mutex);return 0;
 }

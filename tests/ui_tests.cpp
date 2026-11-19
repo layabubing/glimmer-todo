@@ -90,7 +90,18 @@ void snapshot(HWND window,const std::wstring& name) {
 }
 }
 
-int main() {
+int main(int argc,char** argv) {
+    if(argc==2 && std::string_view(argv[1])=="--live-startup-update") {
+        check(updateStatus().phase==UpdatePhase::Idle,"update check starts idle");
+        checkUpdateOnStartup();
+        auto deadline=GetTickCount64()+45000;
+        while(updateStatus().phase==UpdatePhase::Checking && GetTickCount64()<deadline)Sleep(100);
+        auto update=updateStatus();
+        stopUpdater();
+        std::cout<<utf8(update.message)<<'\n';
+        check(update.phase==UpdatePhase::Current || update.phase==UpdatePhase::Available,"startup reaches the live GitHub Release");
+        return 0;
+    }
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     auto desktopName=L"GlimmerUI."+std::to_wstring(GetCurrentProcessId());HDESK original=GetThreadDesktop(GetCurrentThreadId());
     HDESK desktop=CreateDesktopW(desktopName.c_str(),nullptr,nullptr,0,GENERIC_ALL,nullptr);check(desktop && SetThreadDesktop(desktop),"create isolated UI desktop");
@@ -119,7 +130,28 @@ int main() {
     chooseMenuRow(0);check(editingId==second,"task context menu edits the clicked row");cancelEdit();
     rightClickTask(second);chooseMenuRow(2);check(state.findTask(second)->done,"task context menu completes the clicked row");
     rightClickTask(second);chooseMenuRow(2);check(!state.findTask(second)->done,"task context menu restores the clicked row");
-    rightClickTask(fourth);chooseMenuRow(3);check(!state.findTask(fourth) && state.tasks.size()==3,"task context menu deletes only the clicked row");
+    rightClickTask(fourth);chooseMenuRow(4);check(!state.findTask(fourth) && state.tasks.size()==3,"task context menu deletes only the clicked row");
+    rightClickTask(second);chooseMenuRow(3);frames();
+    auto* notePopup=mainPopup();
+    check(taskNoteId==second && taskNoteText.empty(),"task menu opens the selected task's empty note");
+    constexpr auto noteText="准备项目资料 📝\n核对清单和提交时间";
+    surface(mainWindow)->select();ImGui::GetIO().AddInputCharactersUTF8(noteText);frames();
+    check(taskNoteText==noteText,"note editor accepts Chinese, emoji and multiple lines");
+    snapshot(mainWindow,L"task-note");
+    activateMainItem(notePopup->GetID("保存笔记"));
+    check(state.findTask(second)->note==wide(noteText) && state.findTask(first)->note.empty(),"save note to the selected task only");
+    surface(mainWindow)->select();
+    auto taskListId=ImGui::FindWindowByName("##surface")->GetID("##tasks");
+    ImGuiWindow* taskList=nullptr;
+    for(auto* window:ImGui::GetCurrentContext()->Windows)if(window->ChildId==taskListId)taskList=window;
+    check(taskList!=nullptr,"show task list with note action");
+    auto taskScopeId=taskList->GetID(static_cast<int>(second));
+    activateMainItem(ImHashStr("##note",0,taskScopeId));
+    notePopup=mainPopup();
+    check(taskNoteText==noteText,"activate the row's note icon to reopen the saved note");
+    surface(mainWindow)->select();ImGui::GetIO().AddInputCharactersUTF8("未保存内容");frames();
+    activateMainItem(notePopup->GetID("取消"));
+    check(state.findTask(second)->note==wide(noteText),"cancel leaves the saved note intact");
     rightClickMain(ui::size(8,80));chooseMenuRow(0);check(manuallyHidden,"right-click on the main window background opens the application menu");
     SendMessageW(mainWindow,ShowRequest,0,0);frames();
     SendMessageW(mainWindow,TrayMessage,0,WM_RBUTTONUP);
@@ -240,6 +272,7 @@ int main() {
     check(!importWindow && state.tasks.size()==beforeImport+2 && state.tasks[state.tasks.size()-2].text==L"批量任务乙 📝","Ctrl+Enter imports and closes the custom editor");
     surface(mainWindow)->select();ImGui::GetIO().AddKeyEvent(ImGuiMod_Ctrl,false);ImGui::GetIO().AddKeyEvent(ImGuiKey_Enter,false);frames(2);
     State persisted;persisted.load(dataFile);check(persisted.tasks.size()==state.tasks.size() && persisted.schedules.size()==state.schedules.size(),"persist UI changes to real data file");
+    check(persisted.findTask(second)->note==wide(noteText),"task note survives reload after UI edits and sorting");
     check(followCurrentDesktop({mainWindow,compactWindow}),"custom UI supports virtual desktop service");
     DestroyWindow(mainWindow);pump();ui::shutdown();DestroyIcon(appIcon);shutdownVirtualDesktops();Gdiplus::GdiplusShutdown(token);
     check(SetThreadDesktop(original) && CloseDesktop(desktop),"close isolated UI desktop");
