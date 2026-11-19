@@ -15,6 +15,24 @@ void pump() {
 void frames(int count=2) {
     for(int index=0;index<count;++index){pump();renderWindows();Sleep(18);}
 }
+void rightClickMain(ImVec2 position) {
+    auto point=MAKELPARAM(static_cast<int>(position.x),static_cast<int>(position.y));
+    SendMessageW(mainWindow,WM_MOUSEMOVE,0,point);
+    SendMessageW(mainWindow,WM_RBUTTONDOWN,MK_RBUTTON,point);
+    SendMessageW(mainWindow,WM_RBUTTONUP,0,point);
+    check(chrome::menuWindow()!=nullptr,"right-click opens a context menu");
+}
+void rightClickTask(uint64_t id) {
+    auto row=std::find_if(taskRowBounds.begin(),taskRowBounds.end(),[id](const TaskRowBounds& bounds){return bounds.id==id;});
+    check(row!=taskRowBounds.end(),"test task row is visible");
+    rightClickMain(row->rect.GetCenter());
+}
+void chooseMenuRow(int row) {
+    auto menu=chrome::menuWindow();
+    for(int index=0;index<=row;++index)SendMessageW(menu,WM_KEYDOWN,VK_DOWN,0);
+    SendMessageW(menu,WM_KEYDOWN,VK_RETURN,0);
+    frames();
+}
 void activateMainItem(ImGuiID id) {
     surface(mainWindow)->select();
     ImGui::ActivateItemByID(id);
@@ -91,6 +109,21 @@ int main() {
     taskInput="完成今天的阅读";check(submitTask(),"create fourth task for compact list");
     editTask(first);taskInput="整理今天的想法与笔记 📝";check(submitTask() && state.tasks.front().text==L"整理今天的想法与笔记 📝","edit Unicode task through UI action");
     editTask(first);cancelEdit();check(!editingId && taskInput.empty(),"cancel task editing");
+    auto second=state.tasks[1].id;
+    frames();rightClickTask(second);
+    check(selectedTaskId==second,"right-click selects the clicked task instead of the previous selection");
+    snapshot(chrome::menuWindow(),L"task-context-menu");
+    chooseMenuRow(0);check(editingId==second,"task context menu edits the clicked row");cancelEdit();
+    rightClickTask(second);chooseMenuRow(1);check(state.findTask(second)->done,"task context menu completes the clicked row");
+    rightClickTask(second);chooseMenuRow(1);check(!state.findTask(second)->done,"task context menu restores the clicked row");
+    auto fourth=state.tasks.back().id;
+    rightClickTask(fourth);chooseMenuRow(2);check(!state.findTask(fourth) && state.tasks.size()==3,"task context menu deletes only the clicked row");
+    rightClickMain(ui::size(8,80));chooseMenuRow(0);check(manuallyHidden,"right-click on the main window background opens the application menu");
+    SendMessageW(mainWindow,ShowRequest,0,0);frames();
+    SendMessageW(mainWindow,TrayMessage,0,WM_RBUTTONUP);
+    check(chrome::menuWindow()!=nullptr,"tray right-click opens the application menu");
+    chooseMenuRow(0);check(manuallyHidden,"tray menu still controls the application window");
+    SendMessageW(mainWindow,ShowRequest,0,0);frames();
     auto now=nowSeconds();check(state.putSchedule(0,L"阅读与整理记录",now+3600,1),"create real schedule fixture");
     check(state.putSchedule(0,L"复盘今天的进展",now+7200,0),"create second schedule fixture");save();
     for(int theme=0;theme<3;++theme) {

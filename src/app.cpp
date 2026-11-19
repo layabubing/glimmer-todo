@@ -26,6 +26,7 @@ constexpr int AddId=101,SettingsId=104,HideId=105,ScheduleAddId=112,ScheduleSave
 constexpr int PomoStartId=120,PomoResetId=121,PomoSkipId=122,PomoConfigId=123;
 constexpr int ThemeFirstId=500,MenuShow=301,MenuAuto=302,MenuTop=303,MenuSettings=304,MenuExit=305,MenuClear=306;
 constexpr int CollapseFirstId=320,BrowseId=206,ImportId=307,ImportSaveId=308,MenuStartup=309,FontFirstId=520;
+constexpr int TaskRemoveId=600,TaskEditId=603,TaskToggleId=604;
 constexpr int FontPercentages[]={80,90,100,110,120,130,140,150};
 constexpr const char* TaskPriorityNames[]={"低", "普通", "高"};
 enum class WindowKind { Main,Settings,Schedule,Files,Import };
@@ -45,6 +46,8 @@ ULONGLONG transitionStarted=0,nextNotice=0;
 double navigationPosition=0,navigationFrom=0;
 int contentOffset=0;
 uint64_t editingId=0,selectedTaskId=0,selectedScheduleId=0,scheduleEditingId=0,pendingScheduleId=0;
+struct TaskRowBounds { uint64_t id; ImRect rect; };
+std::vector<TaskRowBounds> taskRowBounds;
 bool focusTaskInput=false,installConfirmation=false;
 std::string taskInput,ruleInput,editorText,taskError,taskOptionsError,timerError,settingsError,scheduleError;
 TaskDetails taskDetails;
@@ -221,6 +224,9 @@ void drawTaskRow(const Task& task,int today) {
     float rowHeight=ui::p(14)+titleHeight+metaHeight*(wrapDate?2:1);
     auto background=selectedTaskId==task.id?c.selected:c.surface;
     ImVec2 rowEnd{origin.x+width,origin.y+rowHeight};
+    ImRect visibleRow(origin,rowEnd);
+    visibleRow.ClipWith(ImRect(draw->GetClipRectMin(),draw->GetClipRectMax()));
+    if(visibleRow.GetWidth()>0 && visibleRow.GetHeight()>0)taskRowBounds.push_back({task.id,visibleRow});
     draw->AddRectFilled(origin,rowEnd,ui::ink(background),ui::p(6));
     draw->AddRect(origin,rowEnd,ui::ink(selectedTaskId==task.id?c.accent:c.border),ui::p(6));
     ImGui::SetCursorScreenPos({origin.x+ui::p(5),origin.y+ui::p(6)});bool checked=task.done;
@@ -244,7 +250,7 @@ void drawTaskRow(const Task& task,int today) {
     if(due)draw->AddText({min.x+(wrapDate?0:dueOffset),metaY+(wrapDate?metaHeight:0)},ui::ink(overdue?c.accent:c.muted),dueLabel);
     ImGui::PopFont();
     draw->PopClipRect();
-    ImGui::SetCursorScreenPos({origin.x+width-ui::p(25),origin.y+ui::p(5)});if(ui::iconButton("##remove",ui::Icon::Close,"删除待办",false,22)){selectedTaskId=task.id;post(600);}
+    ImGui::SetCursorScreenPos({origin.x+width-ui::p(25),origin.y+ui::p(5)});if(ui::iconButton("##remove",ui::Icon::Close,"删除待办",false,22)){selectedTaskId=task.id;post(TaskRemoveId);}
     if(bound)ui::icon(draw,ui::Icon::Timer,{origin.x+ui::p(15),metaY+metaHeight/2},6,ui::ink(c.accent));
     ImGui::SetCursorScreenPos({origin.x,rowEnd.y});ImGui::Dummy({width,0});ImGui::PopID();
 }
@@ -287,7 +293,7 @@ void drawTasks() {
     if(state.tasks.empty())emptyState("给今天留一点空间","在下方记录下一件事",ui::Icon::Check);
     int today=localDate(nowSeconds());
     for(const auto& task:state.tasks)drawTaskRow(task,today);
-    if(ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) && !ImGui::GetIO().WantTextInput && ImGui::IsKeyPressed(ImGuiKey_Delete) && selectedTaskId)post(600);
+    if(ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) && !ImGui::GetIO().WantTextInput && ImGui::IsKeyPressed(ImGuiKey_Delete) && selectedTaskId)post(TaskRemoveId);
     ImGui::EndChild();ImGui::PopStyleColor();errorText(taskError);
     bool cancel=ImGui::IsKeyPressed(ImGuiKey_Escape) && !ImGui::IsPopupOpen(nullptr,ImGuiPopupFlags_AnyPopupId|ImGuiPopupFlags_AnyPopupLevel);
     if(focusTaskInput){ImGui::SetKeyboardFocusHere();focusTaskInput=false;}
@@ -385,6 +391,7 @@ void drawPomodoro() {
     ImGui::EndChild();
 }
 void drawMain() {
+    taskRowBounds.clear();
     animateView();drawHeader();if(contentOffset)ImGui::SetCursorPosY(ImGui::GetCursorPosY()+ui::p(static_cast<float>(contentOffset)));
     if(activeView==0){drawTasks();}
     if(activeView==1){drawSchedules();}
@@ -523,6 +530,20 @@ void menu(HWND target) {
     for(int i=0;i<4;++i)items.push_back({CollapseFirstId+i,CollapseNames[i],static_cast<int>(state.collapseMode)==i});
     items.push_back({MenuAuto,L"前台自动隐藏",state.automatic});items.push_back({MenuTop,L"保持窗口置顶",state.topmost});items.push_back({MenuStartup,L"开机自启",startup::enabled()});items.push_back({ImportId,L"批量导入任务"});items.push_back({MenuSettings,L"设置"});items.push_back({MenuClear,L"清理已完成待办"});items.push_back({MenuExit,L"退出浮光待办"});chrome::menu(target,point,items,state.theme,state.fontPercent);
 }
+void mainContextMenu(POINT point) {
+    if(!surface(mainWindow)->context()->OpenPopupStack.empty())return;
+    if(activeView!=0 || (point.x==-1 && point.y==-1)){menu(mainWindow);return;}
+    POINT client=point;
+    require(ScreenToClient(mainWindow,&client),L"无法定位右键菜单。");
+    ImVec2 position{static_cast<float>(client.x),static_cast<float>(client.y)};
+    auto row=std::find_if(taskRowBounds.begin(),taskRowBounds.end(),[position](const TaskRowBounds& bounds){return bounds.rect.Contains(position);});
+    const auto* task=row==taskRowBounds.end()?nullptr:state.findTask(row->id);
+    if(!task){menu(mainWindow);return;}
+    selectedTaskId=task->id;
+    chrome::menu(mainWindow,point,{{TaskEditId,L"编辑待办"},
+        {TaskToggleId,task->done?L"恢复待办":L"完成待办"},
+        {TaskRemoveId,L"删除待办"}},state.theme,state.fontPercent);
+}
 void compactFonts() {
     for(auto font:{compactFont,compactSmallFont})if(font)DeleteObject(font);
     compactFont=CreateFontW(-MulDiv(cp(12),state.fontPercent,100),0,0,0,FW_SEMIBOLD,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Microsoft YaHei UI");
@@ -626,7 +647,9 @@ void command(int id) {
     case MenuStartup:startup::setEnabled(!startup::enabled());break;
     case MenuTop:state.topmost=!state.topmost;SetWindowPos(mainWindow,state.topmost?HWND_TOPMOST:HWND_NOTOPMOST,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);save();break;
     case MenuClear:std::erase_if(state.tasks,[](const Task& task){return task.done;});cancelEdit();save();break;
-    case 600:if(selectedTaskId)removeTask(selectedTaskId);break;
+    case TaskEditId:editTask(selectedTaskId);break;
+    case TaskToggleId:if(selectedTaskId){state.toggleTask(selectedTaskId);save();}break;
+    case TaskRemoveId:if(selectedTaskId)removeTask(selectedTaskId);break;
     case 601:std::erase_if(state.schedules,[](const Schedule& event){return event.id==selectedScheduleId;});selectedScheduleId=0;save();break;
     case 602:state.completeSchedule(selectedScheduleId,nowSeconds());save();break;
     case 710:save();installUpdate();DestroyWindow(mainWindow);break;
@@ -666,7 +689,7 @@ LRESULT CALLBACK windowProc(HWND window,UINT message,WPARAM wParam,LPARAM lParam
         if(kind==WindowKind::Main && (wParam&0xFFF0)==SC_MINIMIZE){manuallyHidden=true;evaluateForeground();return 0;}
         if(kind==WindowKind::Main && (wParam&0xFFF0)==SC_RESTORE){manuallyHidden=false;evaluateForeground();return 0;}break;
     case WM_COMMAND:command(LOWORD(wParam));return 0;
-    case WM_CONTEXTMENU:menu(mainWindow);return 0;
+    case WM_CONTEXTMENU:if(kind==WindowKind::Main)mainContextMenu({GET_X_LPARAM(lParam),GET_Y_LPARAM(lParam)});else menu(mainWindow);return 0;
     case WM_TIMER:if(wParam==2)renderWindows();else{evaluateForeground();pomodoroTick();scheduleNotices();}return 0;
     case ForegroundMessage:evaluateForeground();return 0;
     case ShowRequest:manuallyHidden=false;evaluateForeground();return 0;
