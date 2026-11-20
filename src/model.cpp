@@ -147,10 +147,25 @@ State::State() : rules{
 } {}
 
 namespace {
+bool validTaskDate(int date) {
+    return date > 0 && date == taskDueDate(date / 10000, date / 100 % 100, date % 100);
+}
+
 bool validTaskDetails(TaskDetails details) {
-    int date = details.dueDate;
     return details.priority >= MinTaskPriority && details.priority <= MaxTaskPriority
-        && (date == 0 || date == taskDueDate(date / 10000, date / 100 % 100, date % 100));
+        && (details.dueDate == 0 || validTaskDate(details.dueDate))
+        && details.repeat >= TaskRepeat::None && details.repeat <= TaskRepeat::Weekly;
+}
+
+void setTaskDetails(Task& task, TaskDetails details) {
+    task.details = details;
+    if (details.repeat == TaskRepeat::None) task.completedOn = 0;
+    else if (task.done && !task.completedOn) task.completedOn = localDate(nowSeconds());
+}
+
+std::chrono::sys_days taskCalendarDay(int date) {
+    using namespace std::chrono;
+    return sys_days{year{date / 10000}/(date / 100 % 100)/(date % 100)};
 }
 
 int readTaskPriority(const json& entry) {
@@ -209,7 +224,7 @@ bool State::editTask(uint64_t id, const std::wstring& value, std::optional<TaskD
     if (it == tasks.end()) return false;
     it->text = std::move(text);
     if (details) {
-        it->details = *details;
+        setTaskDetails(*it, *details);
         sortTasks();
     }
     return true;
@@ -219,7 +234,7 @@ bool State::editTaskDetails(uint64_t id, TaskDetails details) {
     if (!validTaskDetails(details)) return false;
     auto it = std::ranges::find(tasks, id, &Task::id);
     if (it == tasks.end()) return false;
-    it->details = details;
+    setTaskDetails(*it, details);
     sortTasks();
     return true;
 }
@@ -232,13 +247,37 @@ bool State::setTaskNote(uint64_t id, std::wstring note) {
     return true;
 }
 
-void State::toggleTask(uint64_t id) {
+void State::toggleTask(uint64_t id, int today) {
     for (auto& task : tasks) if (task.id == id) {
         task.done = !task.done;
+        task.completedOn = task.done && task.details.repeat != TaskRepeat::None ? today : 0;
         if (task.done && pomodoro.taskId == id) pomodoro.taskId = 0;
         sortTasks();
         return;
     }
+}
+
+bool State::refreshTaskRepeats(int today) {
+    using namespace std::chrono;
+    const auto currentDay = taskCalendarDay(today);
+    bool changed = false;
+    for (auto& task : tasks) {
+        if (!task.completedOn) continue;
+        const auto interval = days{task.details.repeat == TaskRepeat::Daily ? 1 : 7};
+        const auto completed = taskCalendarDay(task.completedOn);
+        if (task.details.dueDate) {
+            const auto due = taskCalendarDay(task.details.dueDate);
+            const auto next = due + interval * ((std::max)(days{0}, completed - due) / interval + 1);
+            if (currentDay < next) continue;
+            const year_month_day latest{next + interval * ((currentDay - next) / interval)};
+            task.details.dueDate = taskDueDate(int(latest.year()), unsigned(latest.month()), unsigned(latest.day()));
+        } else if (currentDay < completed + interval) continue;
+        task.completedOn = 0;
+        task.done = false;
+        changed = true;
+    }
+    if (changed) sortTasks();
+    return changed;
 }
 
 void State::removeTask(uint64_t id) {
@@ -307,9 +346,12 @@ void State::load(const std::filesystem::path& file) {
     nextId = 1;
     for (const auto& entry : root.at("tasks")) {
         Task task{entry.at("id").get<uint64_t>(), wide(entry.at("text").get<std::string>()), entry.at("done").get<bool>(),
-            {readTaskPriority(entry), entry.value("dueDate", 0)}, wide(entry.value("note", std::string{}))};
+            {readTaskPriority(entry), entry.value("dueDate", 0), static_cast<TaskRepeat>(entry.value("repeat", 0))},
+            wide(entry.value("note", std::string{})), entry.value("completedOn", 0)};
         require(task.id > 0 && task.id < UINT64_MAX && !trim(task.text).empty() && task.text.size() <= 500
             && validTaskDetails(task.details) && task.note.size() <= MaxTaskNoteLength, L"待办数据无效。");
+        require(task.done && task.details.repeat != TaskRepeat::None ? validTaskDate(task.completedOn) : task.completedOn == 0,
+            L"重复待办的完成日期无效。");
         require(std::none_of(tasks.begin(), tasks.end(), [&](const Task& existing) { return existing.id == task.id; }), L"待办编号重复。");
         nextId = (std::max)(nextId, task.id + 1);
         tasks.push_back(std::move(task));
@@ -340,6 +382,17 @@ void State::load(const std::filesystem::path& file) {
     require(bindPomodoroTask(boundId), L"番茄钟绑定的待办无效。");
     automatic = root.at("automatic").get<bool>();
     topmost = root.at("topmost").get<bool>();
+    multipleTaskWindows = root.value("multipleTaskWindows", false);
+    repeatWindows = {};
+    if (root.contains("repeatWindows")) {
+        const auto& windows = root.at("repeatWindows");
+        require(windows.is_array() && windows.size() == repeatWindows.size(), L"重复待办窗口设置无效。");
+        for (size_t index = 0; index < repeatWindows.size(); ++index) {
+            const auto& entry = windows.at(index);
+            repeatWindows[index] = {entry.at("visible").get<bool>(), entry.at("x").get<int>(), entry.at("y").get<int>(),
+                std::clamp(entry.at("width").get<int>(), 240, 900), std::clamp(entry.at("height").get<int>(), 200, 1200)};
+        }
+    }
     theme = root.value("theme", 0);
     require(theme >= 0 && theme <= 2, L"主题设置无效。");
     fontPercent = root.value("fontPercent", 100);
@@ -362,9 +415,13 @@ void State::save(const std::filesystem::path& file) const {
     json root{{"version", 1}, {"layoutVersion", 4}, {"automatic", automatic}, {"topmost", topmost}, {"theme", theme}, {"fontPercent", fontPercent},
         {"collapseMode", static_cast<int>(collapseMode)}, {"capsuleX", capsuleX}, {"capsuleY", capsuleY},
         {"window", {{"x", x}, {"y", y}, {"width", width}, {"height", height}}},
-        {"tasks", json::array()}, {"rules", json::array()}, {"schedules", json::array()}};
+        {"tasks", json::array()}, {"rules", json::array()}, {"schedules", json::array()},
+        {"multipleTaskWindows", multipleTaskWindows}, {"repeatWindows", json::array()}};
     for (const auto& task : tasks) root["tasks"].push_back({{"id", task.id}, {"text", utf8(task.text)}, {"done", task.done},
-        {"priorityScore", task.details.priority}, {"dueDate", task.details.dueDate}, {"note", utf8(task.note)}});
+        {"priorityScore", task.details.priority}, {"dueDate", task.details.dueDate}, {"note", utf8(task.note)},
+        {"repeat", static_cast<int>(task.details.repeat)}, {"completedOn", task.completedOn}});
+    for (const auto& window : repeatWindows) root["repeatWindows"].push_back({{"visible", window.visible}, {"x", window.x},
+        {"y", window.y}, {"width", window.width}, {"height", window.height}});
     for (const auto& rule : rules) root["rules"].push_back({{"label", utf8(rule.label)}, {"exe", utf8(rule.exe)}, {"enabled", rule.enabled}});
     for (const auto& event : schedules) root["schedules"].push_back({{"id", event.id}, {"text", utf8(event.text)}, {"due", event.due}, {"repeat", event.repeat}, {"done", event.done}, {"notified", event.notified}});
     const auto& p = pomodoro;

@@ -1,6 +1,7 @@
 #pragma once
 #include <windows.h>
 #include <algorithm>
+#include <array>
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -10,9 +11,12 @@
 constexpr int MinTaskPriority = 0, DefaultTaskPriority = 50, MaxTaskPriority = 100;
 constexpr size_t MaxTaskNoteLength = 8192;
 
+enum class TaskRepeat { None, Daily, Weekly };
+
 struct TaskDetails {
     int priority = DefaultTaskPriority;
     int dueDate = 0;
+    TaskRepeat repeat = TaskRepeat::None;
 };
 
 struct Task {
@@ -21,6 +25,7 @@ struct Task {
     bool done;
     TaskDetails details{};
     std::wstring note;
+    int completedOn = 0;
 };
 
 struct TaskImportResult {
@@ -74,6 +79,11 @@ struct CompactInfo {
     std::wstring tasks, schedule, scheduleShort, timer, details;
 };
 
+struct TaskWindowPreferences {
+    bool visible = true;
+    int x = -1, y = -1, width = 260, height = 300;
+};
+
 struct State {
     std::vector<Task> tasks;
     std::vector<Rule> rules;
@@ -81,6 +91,8 @@ struct State {
     Pomodoro pomodoro;
     bool automatic = true;
     bool topmost = true;
+    bool multipleTaskWindows = false;
+    std::array<TaskWindowPreferences, 2> repeatWindows;
     int theme = 0;
     int fontPercent = 100;
     CollapseMode collapseMode = CollapseMode::Capsule;
@@ -95,7 +107,8 @@ struct State {
     bool editTask(uint64_t id, const std::wstring& text, std::optional<TaskDetails> details = std::nullopt);
     bool editTaskDetails(uint64_t id, TaskDetails details);
     bool setTaskNote(uint64_t id, std::wstring note);
-    void toggleTask(uint64_t id);
+    void toggleTask(uint64_t id, int today = localDate(nowSeconds()));
+    bool refreshTaskRepeats(int today);
     void removeTask(uint64_t id);
     bool bindPomodoroTask(uint64_t id);
     bool addRule(const std::wstring& executable);

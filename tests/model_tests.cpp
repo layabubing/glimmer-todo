@@ -75,7 +75,10 @@ int main() {
         std::ifstream input(file);
         auto data=nlohmann::json::parse(input);
         data.erase("fontPercent");
-        for (auto& task : data["tasks"]) { task.erase("priorityScore"); task.erase("dueDate"); task.erase("note"); }
+        data.erase("multipleTaskWindows");data.erase("repeatWindows");
+        for (auto& task : data["tasks"]) {
+            task.erase("priorityScore");task.erase("dueDate");task.erase("note");task.erase("repeat");task.erase("completedOn");
+        }
         data["pomodoro"].erase("taskId");
         data["layoutVersion"]=3;data["window"]["width"]=300;data["window"]["height"]=380;
         std::ofstream output(previousLayout);output<<data;
@@ -86,6 +89,8 @@ int main() {
     check(migrated.tasks.front().details.priority==DefaultTaskPriority && migrated.tasks.front().details.dueDate==0
         && migrated.pomodoro.taskId==0,"existing data has normal priority, no due date and no timer binding");
     check(migrated.findTask(first)->note.empty() && migrated.findTask(second)->note.empty(),"existing tasks start with empty notes");
+    check(!migrated.multipleTaskWindows && migrated.findTask(second)->done && migrated.findTask(second)->details.repeat==TaskRepeat::None,
+        "existing data keeps one window and one-time task completion");
     check(migrated.x==100 && migrated.y==200 && migrated.tasks[0].text==loaded.tasks[0].text && migrated.rules.size()==loaded.rules.size(),"preserve position and data when upgrading layout");
     migrated.width=320;migrated.height=360;migrated.save(previousLayout);State resized;resized.load(previousLayout);
     check(resized.width==320 && resized.height==360,"preserve user dimensions after layout upgrade");
@@ -112,6 +117,43 @@ int main() {
         check(compact.collapseMode==state.collapseMode && compact.capsuleX==-320 && compact.capsuleY==64,"persist collapse mode and position");
     }
     auto now=nowSeconds();
+    State recurring;
+    auto daily=recurring.nextId;
+    check(recurring.addTask(L"每日复习",{70,20280228,TaskRepeat::Daily}),"add daily task with a deadline");
+    auto weekly=recurring.nextId;
+    check(recurring.addTask(L"每周整理",{60,20280228,TaskRepeat::Weekly}),"add weekly task with a deadline");
+    auto undated=recurring.nextId;
+    check(recurring.addTask(L"每周记录",{50,0,TaskRepeat::Weekly}),"add weekly task without a deadline");
+    auto once=recurring.nextId;
+    check(recurring.addTask(L"一次性待办"),"add a one-time task alongside recurring tasks");
+    check(recurring.bindPomodoroTask(daily) && recurring.setTaskNote(daily,L"复习重点"),"prepare timer binding and note on a recurring task");
+    recurring.toggleTask(daily,20280228);recurring.toggleTask(weekly,20280228);recurring.toggleTask(undated,20280229);recurring.toggleTask(once,20280228);
+    check(!recurring.refreshTaskRepeats(20280228) && recurring.findTask(daily)->done && !recurring.pomodoro.taskId,
+        "completion lasts through the current period and unbinds the timer");
+    check(recurring.refreshTaskRepeats(20280229) && !recurring.findTask(daily)->done && recurring.findTask(daily)->details.dueDate==20280229
+        && recurring.findTask(weekly)->done,"daily task reopens at the next local calendar date");
+    recurring.toggleTask(daily,20280229);recurring.toggleTask(daily,20280229);
+    check(!recurring.findTask(daily)->done && !recurring.findTask(daily)->completedOn && recurring.findTask(daily)->details.dueDate==20280229,
+        "undo completion retains the current deadline");
+    recurring.toggleTask(daily,20280303);
+    recurring.multipleTaskWindows=true;
+    recurring.repeatWindows[1]={false,340,25,275,310};
+    auto repeatFile=directory/L"recurring.json";
+    recurring.save(repeatFile);
+    State restoredRecurring;restoredRecurring.load(repeatFile);
+    check(restoredRecurring.multipleTaskWindows && !restoredRecurring.repeatWindows[1].visible
+        && restoredRecurring.repeatWindows[1].x==340 && restoredRecurring.repeatWindows[1].height==310,
+        "restore opt-in window visibility and bounds");
+    check(restoredRecurring.refreshTaskRepeats(20280306) && !restoredRecurring.findTask(daily)->done
+        && restoredRecurring.findTask(daily)->details.dueDate==20280306 && restoredRecurring.findTask(daily)->note==L"复习重点"
+        && !restoredRecurring.findTask(weekly)->done && restoredRecurring.findTask(weekly)->details.dueDate==20280306
+        && restoredRecurring.findTask(undated)->done && restoredRecurring.findTask(once)->done,
+        "reopen dated tasks after restart without losing notes, cadence or one-time completion");
+    check(restoredRecurring.refreshTaskRepeats(20280307) && !restoredRecurring.findTask(undated)->done
+        && restoredRecurring.findTask(undated)->details.dueDate==0,"undated task repeats seven days after completion");
+    restoredRecurring.toggleTask(weekly,20280303);
+    check(!restoredRecurring.refreshTaskRepeats(20280306) && restoredRecurring.refreshTaskRepeats(20280313)
+        && restoredRecurring.findTask(weekly)->details.dueDate==20280313,"finishing early advances past the completed deadline");
     State noted;
     auto noteId=noted.nextId;
     check(noted.addTask(L"整理资料",{82,20280229}) && noted.addTask(L"另一项任务"),"set up independent task notes");
